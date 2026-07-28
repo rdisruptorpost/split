@@ -81,8 +81,7 @@ func (m *Model) render() string {
 	mainWidth := m.width - sidebarWidth
 	main := lipgloss.JoinVertical(
 		lipgloss.Left,
-		m.renderTabs(mainWidth),
-		m.renderWorkspace(mainWidth, m.height-tabBarHeight-statusHeight),
+		m.renderWorkspace(mainWidth, m.height-statusHeight),
 		m.renderStatus(mainWidth),
 	)
 	main = fitBlock(main, mainWidth, m.height)
@@ -111,7 +110,7 @@ func (m *Model) renderSidebar(width, height int) string {
 		" "+styles.logo.Render("SPLIT")+styles.muted.Render(" · ")+styles.text.Bold(true).Render(m.projectName()),
 		" "+styles.muted.Render(shortenPath(m.root, contentWidth-1)),
 		"",
-		" "+styles.eyebrow.Render("SESSIONS"),
+		" "+styles.eyebrow.Render("PROJECTS"),
 	)
 
 	for index, item := range m.tabs {
@@ -142,16 +141,16 @@ func (m *Model) renderSidebar(width, height int) string {
 		lines = append(lines, row)
 	}
 
-	lines = append(lines, "", " "+styles.eyebrow.Render("LAUNCHERS"))
-	for _, option := range m.launchOptions {
-		indicator := styles.muted.Render("○")
-		label := styles.muted.Render(option.title)
-		if option.available {
-			indicator = lipgloss.NewStyle().Foreground(palette.green).Render("●")
-			label = styles.text.Render(option.title)
-		}
-		lines = append(lines, " "+indicator+" "+label)
+	newProjectLabel := "  + New project"
+	newProjectRow := lipgloss.NewStyle().
+		Width(contentWidth).
+		Foreground(palette.accent).
+		Bold(true).
+		Render(newProjectLabel)
+	if m.focus == focusSidebar && m.sidebarCursor == len(m.tabs) {
+		newProjectRow = styles.activeSession.Width(contentWidth).Render("› + New project")
 	}
+	lines = append(lines, newProjectRow)
 
 	for len(lines) < height-2 {
 		lines = append(lines, "")
@@ -199,7 +198,7 @@ func (m *Model) renderLauncherOverlay(base string) string {
 		}
 		content += block + "\n"
 	}
-	content += "\n" + styles.muted.Render("enter/v split right   s split down   t new tab   esc cancel")
+	content += "\n" + styles.muted.Render("enter/v split right   s split down   t new project   esc cancel")
 
 	modal := lipgloss.NewStyle().
 		Width(innerWidth).
@@ -276,20 +275,6 @@ func (m *Model) tabProfileSummary(item *tab) string {
 		}
 	}
 	return strings.Join(labels, "·")
-}
-func (m *Model) renderTabs(width int) string {
-	active := m.active()
-	var labels []string
-	for _, item := range m.tabs {
-		label := " " + item.title + " "
-		if active != nil && item.id == active.id {
-			labels = append(labels, styles.activeTab.Render(label))
-		} else {
-			labels = append(labels, styles.inactiveTab.Render(label))
-		}
-	}
-
-	return fitLine(strings.Join(labels, " "), width)
 }
 
 func (m *Model) renderWorkspace(width, height int) string {
@@ -395,7 +380,7 @@ func (m *Model) renderTerminal(item *pane, width, height int) string {
 		message := lipgloss.NewStyle().Foreground(palette.yellow).Bold(true).Render("Agent pane too narrow") +
 			"\n\n" + styles.muted.Render("ctrl+b  =  balance panes") +
 			"\n" + styles.muted.Render("ctrl+b  x  close a pane") +
-			"\n" + styles.muted.Render("launcher t  open a new tab")
+			"\n" + styles.muted.Render("launcher t  new project")
 		return placeBlock(message, width, height)
 	}
 	return fitBlock(item.session.Render(), width, height)
@@ -446,7 +431,7 @@ func (m *Model) renderOverview(width, height int) string {
 			key.Render("right-click") + " pane action menu\n" +
 			key.Render("ctrl+b  v") + "   split right\n" +
 			key.Render("ctrl+b  s") + "   split down\n" +
-			key.Render("ctrl+b  c") + "   new shell tab\n" +
+			key.Render("ctrl+b  c") + "   new project\n" +
 			key.Render("ctrl+b  a") + "   launch an agent\n" +
 			key.Render("ctrl+b  x") + "   close focused pane\n" +
 			key.Render("ctrl+b  hjkl") + " move focused pane\n" +
@@ -490,7 +475,7 @@ func (m *Model) renderStatus(width int) string {
 	if m.contextMenu.open {
 		hint += "click an action  hover to select  esc close"
 	} else if m.launcherOpen {
-		hint += "enter split right  s split down  t new tab  esc cancel"
+		hint += "enter split right  s split down  t new project  esc cancel"
 	} else {
 		switch m.mode {
 		case modeTerminal:

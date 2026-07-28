@@ -31,15 +31,60 @@ func TestInitialViewFillsWindow(t *testing.T) {
 	if !strings.Contains(view.Content, "SPLIT") {
 		t.Fatal("view does not contain the Split sidebar")
 	}
-	if !strings.Contains(view.Content, "Command center") {
-		t.Fatal("view does not contain the overview pane")
+	if !strings.Contains(view.Content, "PROJECTS") || !strings.Contains(view.Content, "+ New project") {
+		t.Fatal("sidebar should expose the project switcher and new-project control")
+	}
+	if strings.Contains(view.Content, "LAUNCHERS") {
+		t.Fatal("variable launch profiles should not occupy permanent sidebar space")
+	}
+	if strings.Contains(view.Content, "Command center") {
+		t.Fatal("projects should start without the command-center pane")
 	}
 	plainLines := strings.Split(ansi.Strip(view.Content), "\n")
-	if !strings.Contains(plainLines[1], "Command center") {
-		t.Fatal("compact pane header should begin directly below the one-row tab bar")
+	if !strings.Contains(plainLines[0], "PowerShell") {
+		t.Fatal("PowerShell pane should begin on the first row without a top tab strip")
+	}
+	if model.workspaceRect().Y != 0 {
+		t.Fatal("workspace should reclaim the row formerly occupied by top tabs")
 	}
 	if !view.AltScreen {
 		t.Fatal("view should use the alternate screen")
+	}
+}
+
+func TestSidebarCreatesAndSwitchesProjectsWithMouse(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+
+	_, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	firstProject := model.tabs[0]
+	newProjectRow := sidebarProjectStart + len(model.tabs)
+	model.handleMouseClick(tea.Mouse{X: 2, Y: newProjectRow, Button: tea.MouseLeft})
+
+	if len(model.tabs) != 2 {
+		t.Fatalf("clicking New project should create a second project, got %d", len(model.tabs))
+	}
+	if model.activeTab != 1 || model.tabs[1].title != "project 2" {
+		t.Fatalf("new project should be selected and named consistently: active=%d title=%q", model.activeTab, model.tabs[1].title)
+	}
+	if model.tabs[1].activePane == firstProject.activePane {
+		t.Fatal("new project should own an independent terminal workspace")
+	}
+	if got := len(model.tabs[1].root.Leaves()); got != 1 {
+		t.Fatalf("new project should start as one full-size PowerShell pane, got %d panes", got)
+	}
+	if item := model.activePane(); item == nil || item.kind != paneTerminal || item.profile != profileShell {
+		t.Fatal("new project should focus its PowerShell pane")
+	}
+
+	model.handleMouseClick(tea.Mouse{X: sidebarWidth + 2, Y: 0, Button: tea.MouseLeft})
+	if model.activeTab != 1 {
+		t.Fatal("clicking the top of the workspace must not act like a removed project tab")
+	}
+
+	model.handleMouseClick(tea.Mouse{X: 2, Y: sidebarProjectStart, Button: tea.MouseLeft})
+	if model.activeTab != 0 || model.active() != firstProject {
+		t.Fatal("clicking a project row should switch back to that workspace")
 	}
 }
 
@@ -111,8 +156,8 @@ func TestSplitsBalanceAndActivePaneCanMove(t *testing.T) {
 	model.splitActive(layout.Columns)
 
 	active := model.active()
-	if got := len(active.root.Leaves()); got != 4 {
-		t.Fatalf("expected four panes, got %d", got)
+	if got := len(active.root.Leaves()); got != 3 {
+		t.Fatalf("expected three panes, got %d", got)
 	}
 	rects := active.root.Rects(model.workspaceRect())
 	minimumWidth, maximumWidth := 1<<30, 0
@@ -138,6 +183,7 @@ func TestThinAgentPaneUsesSafePlaceholder(t *testing.T) {
 	defer model.Close()
 
 	_, _ = model.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	model.splitActive(layout.Columns)
 	model.activePane().profile = profileCodex
 	model.mode = modeTerminal
 	view := model.View()
@@ -186,6 +232,7 @@ func TestColumnGapStaysCleanForWorkspaceHeight(t *testing.T) {
 	defer model.Close()
 
 	_, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	model.splitActive(layout.Columns)
 	viewLines := strings.Split(ansi.Strip(model.View().Content), "\n")
 	active := model.active()
 	rects := active.root.Rects(model.workspaceRect())
@@ -216,17 +263,6 @@ func TestClickingTerminalPaneEntersInputMode(t *testing.T) {
 	})
 	if model.mode != modeTerminal || model.focus != focusPanes {
 		t.Fatal("clicking a live terminal should focus it in terminal-input mode")
-	}
-
-	overviewID := active.root.First.PaneID
-	overviewRect := rects[overviewID]
-	model.handleMouseClick(tea.Mouse{
-		X:      overviewRect.X + overviewRect.Width/2,
-		Y:      overviewRect.Y + overviewRect.Height/2,
-		Button: tea.MouseLeft,
-	})
-	if model.mode != modeNavigate || active.activePane != overviewID {
-		t.Fatal("clicking an informational pane should select it without entering input mode")
 	}
 }
 

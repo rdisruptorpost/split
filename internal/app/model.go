@@ -15,8 +15,7 @@ const (
 	defaultWidth           = 120
 	defaultHeight          = 36
 	sidebarWidth           = 24
-	sidebarSessionStart    = 4
-	tabBarHeight           = 1
+	sidebarProjectStart    = 4
 	statusHeight           = 1
 	agentMinimumBodyWidth  = 38
 	agentMinimumBodyHeight = 8
@@ -87,10 +86,11 @@ type Model struct {
 	sidebarVisible   bool
 	sidebarCursor    int
 
-	tabs      []*tab
-	activeTab int
-	panes     map[string]*pane
-	nextID    int
+	tabs              []*tab
+	activeTab         int
+	panes             map[string]*pane
+	nextID            int
+	nextProjectNumber int
 
 	events chan terminal.Event
 	notice string
@@ -129,27 +129,23 @@ func discoverLaunchOptions(root string) []launchOption {
 
 func New(root string) *Model {
 	model := &Model{
-		width:          defaultWidth,
-		height:         defaultHeight,
-		root:           root,
-		mode:           modeNavigate,
-		focus:          focusPanes,
-		sidebarVisible: true,
-		panes:          make(map[string]*pane),
-		events:         make(chan terminal.Event, 128),
+		width:             defaultWidth,
+		height:            defaultHeight,
+		root:              root,
+		mode:              modeNavigate,
+		focus:             focusPanes,
+		sidebarVisible:    true,
+		panes:             make(map[string]*pane),
+		events:            make(chan terminal.Event, 128),
+		nextProjectNumber: 2,
 	}
 	model.launchOptions = discoverLaunchOptions(root)
 
-	overview := model.newOverviewPane()
 	shell := model.newTerminalPane("PowerShell")
-	tree := layout.Leaf(overview.id)
-	tree.Split(overview.id, shell.id, layout.Columns)
-	tree.Ratio = 0.36
-
 	model.tabs = []*tab{{
 		id:         model.newID("tab"),
-		title:      "workspace",
-		root:       tree,
+		title:      model.projectName(),
+		root:       layout.Leaf(shell.id),
 		activePane: shell.id,
 	}}
 	model.resizeActivePanes()
@@ -248,9 +244,9 @@ func (m *Model) workspaceRect() layout.Rect {
 	left := m.effectiveSidebarWidth()
 	return layout.Rect{
 		X:      left,
-		Y:      tabBarHeight,
+		Y:      0,
 		Width:  max(1, m.width-left),
-		Height: max(1, m.height-tabBarHeight-statusHeight),
+		Height: max(1, m.height-statusHeight),
 	}
 }
 
@@ -297,6 +293,14 @@ func (m *Model) splitActiveProfile(profile paneProfile, axis layout.Axis) {
 	m.resizeActivePanes()
 }
 
+func (m *Model) newProject() {
+	shell := m.newTerminalPane("PowerShell")
+	title := fmt.Sprintf("project %d", m.nextProjectNumber)
+	m.nextProjectNumber++
+	m.appendTab(shell, title)
+	m.notice = "Created a new PowerShell project"
+}
+
 func (m *Model) newTab() {
 	m.newTabProfile(profileShell)
 }
@@ -306,17 +310,25 @@ func (m *Model) newTabProfile(profile paneProfile) {
 	if item == nil {
 		return
 	}
+	m.appendTab(item, profileTabTitle(profile, len(m.tabs)+1))
+	m.notice = "Created a new " + item.title + " project"
+}
+
+func (m *Model) appendTab(item *pane, title string) {
 	m.tabs = append(m.tabs, &tab{
 		id:         m.newID("tab"),
-		title:      profileTabTitle(profile, len(m.tabs)+1),
+		title:      title,
 		root:       layout.Leaf(item.id),
 		activePane: item.id,
 	})
+	m.activateLastTab()
+}
+
+func (m *Model) activateLastTab() {
 	m.activeTab = len(m.tabs) - 1
 	m.sidebarCursor = m.activeTab
 	m.mode = modeNavigate
 	m.focus = focusPanes
-	m.notice = "Created a new " + item.title + " tab"
 	m.resizeActivePanes()
 }
 

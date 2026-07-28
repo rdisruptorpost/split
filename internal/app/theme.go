@@ -33,12 +33,11 @@ var palette = struct {
 }
 
 var styles = struct {
-	logo          lipgloss.Style
-	eyebrow       lipgloss.Style
-	text          lipgloss.Style
-	muted         lipgloss.Style
-	activeTab     lipgloss.Style
-	inactiveTab   lipgloss.Style
+	logo    lipgloss.Style
+	eyebrow lipgloss.Style
+	text    lipgloss.Style
+	muted   lipgloss.Style
+
 	activeSession lipgloss.Style
 	session       lipgloss.Style
 	paneTitle     lipgloss.Style
@@ -54,12 +53,7 @@ var styles = struct {
 		Foreground(palette.text),
 	muted: lipgloss.NewStyle().
 		Foreground(palette.muted),
-	activeTab: lipgloss.NewStyle().
-		Foreground(palette.accent).
-		Background(palette.surfaceAlt).
-		Bold(true),
-	inactiveTab: lipgloss.NewStyle().
-		Foreground(palette.muted),
+
 	activeSession: lipgloss.NewStyle().
 		Foreground(palette.text).
 		Background(palette.surfaceAlt).

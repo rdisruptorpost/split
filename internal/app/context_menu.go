@@ -132,7 +132,7 @@ func (m *Model) paneContextMenuItems() []paneContextMenuItem {
 	return []paneContextMenuItem{
 		{label: "Split right…", hint: "›", action: paneMenuOpenSplitRight, enabled: active != nil},
 		{label: "Split below…", hint: "›", action: paneMenuOpenSplitBelow, enabled: active != nil},
-		{label: "Open in new tab…", hint: "›", action: paneMenuOpenNewTab, enabled: true},
+		{label: "Open in new project…", hint: "›", action: paneMenuOpenNewTab, enabled: true},
 		{separator: true},
 		{label: "Move left", hint: "←", action: paneMenuMove, direction: layout.Left, enabled: m.canMoveActivePane(layout.Left)},
 		{label: "Move right", hint: "→", action: paneMenuMove, direction: layout.Right, enabled: m.canMoveActivePane(layout.Right)},
@@ -305,7 +305,7 @@ func (m *Model) paneContextMenuTitle() string {
 	case paneMenuSplitBelow:
 		return "Split below"
 	case paneMenuNewTab:
-		return "New tab"
+		return "New project"
 	default:
 		return "Pane"
 	}

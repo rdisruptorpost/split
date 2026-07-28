@@ -93,7 +93,11 @@ func (m *Model) handleNavigationKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd
 		}
 	case "enter":
 		if m.focus == focusSidebar {
-			m.selectTab(m.sidebarCursor)
+			if m.sidebarCursor == len(m.tabs) {
+				m.newProject()
+			} else {
+				m.selectTab(m.sidebarCursor)
+			}
 			return m, nil
 		}
 		item := m.activePane()
@@ -119,7 +123,7 @@ func (m *Model) handleDirectionalNavigation(key string) {
 		case "up", "k":
 			m.sidebarCursor = max(0, m.sidebarCursor-1)
 		case "down", "j":
-			m.sidebarCursor = min(len(m.tabs)-1, m.sidebarCursor+1)
+			m.sidebarCursor = min(len(m.tabs), m.sidebarCursor+1)
 		}
 		return
 	}
@@ -232,24 +236,15 @@ func (m *Model) handleMouseClick(mouse tea.Mouse) {
 
 	sidebar := m.effectiveSidebarWidth()
 	if sidebar > 0 && mouse.X < sidebar {
-		index := mouse.Y - sidebarSessionStart
-		if index >= 0 && index < len(m.tabs) {
+		index := mouse.Y - sidebarProjectStart
+		switch {
+		case index >= 0 && index < len(m.tabs):
 			m.sidebarCursor = index
 			m.selectTab(index)
+		case index == len(m.tabs):
+			m.newProject()
 		}
 		return
-	}
-
-	if mouse.Y == 0 {
-		x := sidebar
-		for index, item := range m.tabs {
-			width := len(item.title) + 2
-			if mouse.X >= x && mouse.X < x+width {
-				m.selectTab(index)
-				return
-			}
-			x += width + 1
-		}
 	}
 
 	if !m.workspaceRect().Contains(mouse.X, mouse.Y) {
