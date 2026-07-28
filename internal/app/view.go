@@ -21,18 +21,25 @@ func (m *Model) View() tea.View {
 	view.AltScreen = true
 	view.ReportFocus = true
 	view.MouseMode = tea.MouseModeCellMotion
-	if m.contextMenu.open {
+	if m.contextMenu.open || m.projectMenu.open || m.renameDialog.open {
 		view.MouseMode = tea.MouseModeAllMotion
 	}
 	view.BackgroundColor = palette.background
 	view.ForegroundColor = palette.text
-	view.WindowTitle = "Split — " + m.projectName()
+	title := m.projectName()
+	if active := m.active(); active != nil && strings.TrimSpace(active.title) != "" {
+		title = active.title
+	}
+	view.WindowTitle = "Split — " + title
 	view.Cursor = m.renderCursor()
 	return view
 }
 
 func (m *Model) renderCursor() *tea.Cursor {
-	if m.contextMenu.open || m.mode != modeTerminal || m.focus != focusPanes {
+	if m.renameDialog.open {
+		return m.renderProjectRenameCursor()
+	}
+	if m.contextMenu.open || m.projectMenu.open || m.mode != modeTerminal || m.focus != focusPanes {
 		return nil
 	}
 	active := m.active()
@@ -95,7 +102,11 @@ func (m *Model) render() string {
 		)
 	}
 
-	if m.contextMenu.open {
+	if m.renameDialog.open {
+		result = m.renderProjectRenameOverlay(result)
+	} else if m.projectMenu.open {
+		result = m.renderProjectContextMenuOverlay(result)
+	} else if m.contextMenu.open {
 		result = m.renderPaneContextMenuOverlay(result)
 	}
 	return result
@@ -112,22 +123,7 @@ func (m *Model) renderSidebar(width, height int) string {
 	for _, row := range m.sidebarRows() {
 		switch row.kind {
 		case sidebarProjectRow:
-			item := m.tabs[row.projectIndex]
-			active := row.projectIndex == m.activeTab
-			cursor := row.projectIndex == m.sidebarCursor && m.focus == focusSidebar
-			label := m.renderTabStatus(item) + " " + item.title
-			if cursor {
-				label = "› " + label
-			} else {
-				label = "  " + label
-			}
-			label = fitLine(label, contentWidth)
-			if active {
-				label = styles.activeSession.Width(contentWidth).Render(label)
-			} else {
-				label = styles.session.Width(contentWidth).Render(label)
-			}
-			lines = append(lines, label)
+			lines = append(lines, m.renderProjectSidebarRow(row.projectIndex, contentWidth))
 
 		case sidebarAgentRow:
 			lines = append(lines, m.renderAgentSidebarRow(row, contentWidth))
@@ -400,7 +396,10 @@ func (m *Model) renderOverview(width, height int) string {
 func (m *Model) renderStatus(width int) string {
 	modeLabel := " NAV "
 	modeColor := palette.accent
-	if m.contextMenu.open {
+	if m.renameDialog.open {
+		modeLabel = " RENAME "
+		modeColor = palette.secondary
+	} else if m.projectMenu.open || m.contextMenu.open {
 		modeLabel = " MENU "
 		modeColor = palette.secondary
 	} else {
@@ -420,7 +419,9 @@ func (m *Model) renderStatus(width int) string {
 		Render(modeLabel)
 
 	hint := " "
-	if m.contextMenu.open {
+	if m.renameDialog.open {
+		hint += "type a project name  enter save  esc cancel"
+	} else if m.projectMenu.open || m.contextMenu.open {
 		hint += "click an action  hover to select  esc close"
 	} else {
 		switch m.mode {

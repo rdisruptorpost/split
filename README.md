@@ -7,7 +7,7 @@ Every pane is an ordinary PowerShell terminal. Split does not special-case launc
 ## Current foundation
 
 - Bubble Tea v2 interface with a neutral, high-contrast graphite theme;
-- sidebar-only project switching and a clickable `+ New project` row;
+- sidebar-only project switching with a continuous selected-row highlight, right-click rename/close actions, and a clickable `+ New project` row;
 - nested Codex and Claude rows with loading/working spinners, blocked alerts, completion ticks, interrupted turns, idle markers, and exited markers;
 - recursive split-tree layouts with movement, closing, and automatic balancing;
 - keyboard prefix controls plus a hoverable right-click pane menu;
@@ -69,13 +69,15 @@ Split starts in navigation mode.
 | `Tab` | Move focus between panes and the project sidebar |
 | `Enter` | Enter the focused terminal |
 | Mouse click | Focus a terminal and immediately enter input mode |
-| Click an agent row | Switch project, focus that agent pane, and enter input mode |
+| Click anywhere in sidebar | Leave terminal-input mode and focus project navigation; `q` now detaches |
+| Click an agent row | Select its project and pane while keeping keyboard focus in the sidebar |
+| Right-click project | Open project actions for Rename project or Close project |
 | Right-click pane | Open the mouse pane-action menu |
 | `[` / `]` | Previous or next project |
 | `q` or `Ctrl+C` | Detach the UI while in navigation mode |
 | `Ctrl+B` | Open the one-shot command prefix |
 
-The right-click menu directly creates a PowerShell split to the right or below, creates a new project, moves the focused pane, balances the layout, or closes the pane. Hover selects a row and left-click activates it.
+The pane right-click menu directly creates a PowerShell split to the right or below, creates a new project, moves the focused pane, balances the layout, or closes the pane. The project right-click menu renames a project or closes all of its panes and removes it; Close project is disabled for the final remaining project. Hover selects a row and left-click activates it.
 
 Prefix commands:
 

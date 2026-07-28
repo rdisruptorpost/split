@@ -64,6 +64,58 @@ func TestPersistentModelRestoresProjectOrderNamesAndPaneLayouts(t *testing.T) {
 	}
 }
 
+func TestProjectRenameIsPersisted(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	model, err := Open(root, statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.openProjectRenameDialog(0)
+	model.insertProjectRenameText("persistent project")
+	model.confirmProjectRename()
+	if model.renameDialog.open {
+		t.Fatal("confirming a valid name should close the dialog")
+	}
+	model.Close()
+
+	restored, err := Open(root, statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if got := restored.tabs[0].title; got != "persistent project" {
+		t.Fatalf("restored project name = %q", got)
+	}
+}
+
+func TestClosedProjectIsRemovedFromPersistentState(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	model, err := Open(root, statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedProjectID := model.tabs[0].id
+	model.newProject()
+	survivingProjectID := model.tabs[1].id
+	if !model.closeProject(0) {
+		t.Fatal("expected the first of two projects to close")
+	}
+	model.Close()
+
+	restored, err := Open(root, statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if len(restored.tabs) != 1 || restored.tabs[0].id != survivingProjectID {
+		t.Fatalf("restored projects = %#v, want only %q", restored.tabs, survivingProjectID)
+	}
+	if restored.tabs[0].id == closedProjectID {
+		t.Fatal("closed project returned after restart")
+	}
+}
 func TestRestoredInactiveProjectStartsLazilyWhenSelected(t *testing.T) {
 	root := t.TempDir()
 	statePath := filepath.Join(t.TempDir(), "state.db")

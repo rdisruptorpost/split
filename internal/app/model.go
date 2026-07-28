@@ -84,6 +84,8 @@ type Model struct {
 	notice string
 
 	contextMenu     paneContextMenuState
+	projectMenu     projectContextMenuState
+	renameDialog    projectRenameState
 	detachRequested bool
 
 	store *state.Store
@@ -343,11 +345,48 @@ func (m *Model) closeActivePane() {
 	m.persist()
 }
 
+func (m *Model) closeProject(projectIndex int) bool {
+	if projectIndex < 0 || projectIndex >= len(m.tabs) {
+		return false
+	}
+	if len(m.tabs) <= 1 {
+		m.focusSidebarNavigation(0)
+		m.notice = "Split keeps at least one project open"
+		return false
+	}
+
+	project := m.tabs[projectIndex]
+	projectName := "project"
+	if project != nil {
+		projectName = project.title
+		if project.root != nil {
+			for _, paneID := range project.root.Leaves() {
+				m.closePane(paneID)
+			}
+		}
+	}
+	m.tabs = append(m.tabs[:projectIndex], m.tabs[projectIndex+1:]...)
+	switch {
+	case projectIndex < m.activeTab:
+		m.activeTab--
+	case projectIndex == m.activeTab && m.activeTab >= len(m.tabs):
+		m.activeTab = len(m.tabs) - 1
+	}
+	m.activeTab = max(0, min(m.activeTab, len(m.tabs)-1))
+	m.focusSidebarNavigation(m.activeTab)
+	m.ensureProjectStarted(m.active())
+	m.resizeActivePanes()
+	m.notice = "Closed project " + projectName
+	m.persist()
+	return true
+}
+
 func (m *Model) closePane(paneID string) {
 	if item := m.panes[paneID]; item != nil && item.session != nil {
 		item.session.Close()
 	}
 	delete(m.panes, paneID)
+	delete(m.agents, paneID)
 }
 
 func (m *Model) switchTab(delta int) {
@@ -540,6 +579,8 @@ func (m *Model) TakeDetachRequest() bool {
 // ClientDetached closes transient UI state without closing any terminal.
 func (m *Model) ClientDetached() {
 	m.contextMenu = paneContextMenuState{}
+	m.projectMenu = projectContextMenuState{}
+	m.renameDialog = projectRenameState{}
 	m.mode = modeNavigate
 	m.modeBeforePrefix = modeNavigate
 	m.focus = focusPanes

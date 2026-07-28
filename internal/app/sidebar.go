@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"split/internal/agent"
 )
@@ -43,6 +44,46 @@ func (m *Model) sidebarRows() []sidebarRow {
 		}
 	}
 	return append(rows, sidebarRow{kind: sidebarNewProjectRow, projectIndex: len(m.tabs)})
+}
+
+func (m *Model) sidebarRowAt(y int) (sidebarRow, bool) {
+	index := y - sidebarProjectStart
+	rows := m.sidebarRows()
+	visibleRows := max(0, m.height-2-sidebarProjectStart)
+	if index < 0 || index >= len(rows) || index >= visibleRows {
+		return sidebarRow{}, false
+	}
+	return rows[index], true
+}
+
+func (m *Model) focusSidebarNavigation(cursor int) {
+	m.mode = modeNavigate
+	m.modeBeforePrefix = modeNavigate
+	m.focus = focusSidebar
+	m.sidebarCursor = max(0, min(cursor, len(m.tabs)))
+}
+
+func (m *Model) renderProjectSidebarRow(projectIndex, width int) string {
+	if projectIndex < 0 || projectIndex >= len(m.tabs) {
+		return fitLine("", width)
+	}
+	item := m.tabs[projectIndex]
+	active := projectIndex == m.activeTab
+	cursor := projectIndex == m.sidebarCursor && m.focus == focusSidebar
+	label := m.renderTabStatus(item) + " " + item.title
+	if cursor {
+		label = "› " + label
+	} else {
+		label = "  " + label
+	}
+	label = fitLine(label, width)
+	if active {
+		// Status dots carry their own ANSI reset sequences. Strip those
+		// before applying the active style so the grey background stays
+		// continuous behind the complete project row.
+		return styles.activeSession.Render(fitLine(ansi.Strip(label), width))
+	}
+	return styles.session.Width(width).Render(label)
 }
 
 func (m *Model) agentDisplayName(row sidebarRow) string {

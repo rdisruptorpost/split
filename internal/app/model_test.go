@@ -59,6 +59,236 @@ func TestInitialViewFillsWindow(t *testing.T) {
 	}
 }
 
+func TestActiveProjectRowUsesOneContinuousBackgroundStyle(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+
+	row := model.renderProjectSidebarRow(0, sidebarWidth-1)
+	plain := ansi.Strip(row)
+	if got := ansi.StringWidth(row); got != sidebarWidth-1 {
+		t.Fatalf("active project row width = %d, want %d", got, sidebarWidth-1)
+	}
+	if want := styles.activeSession.Render(plain); row != want {
+		t.Fatalf("active project row contains nested resets that break its background\nwant: %q\n got: %q", want, row)
+	}
+}
+
+func TestRightClickProjectMenuOpensRenameDialog(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+	_, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	model.mode = modeTerminal
+	model.focus = focusPanes
+
+	_, _ = model.Update(tea.MouseClickMsg(tea.Mouse{
+		X: 2, Y: sidebarProjectStart, Button: tea.MouseRight,
+	}))
+	if !model.projectMenu.open || model.projectMenu.targetProject != 0 {
+		t.Fatalf("right-click should open the project menu for project zero: %#v", model.projectMenu)
+	}
+	if model.mode != modeNavigate || model.focus != focusSidebar {
+		t.Fatal("right-clicking the sidebar should leave terminal-input mode")
+	}
+	items := model.projectContextMenuItems()
+	if len(items) != 2 || items[0].label != "Rename project" || items[1].label != "Close project" {
+		t.Fatalf("project menu items = %#v", items)
+	}
+	if items[1].enabled {
+		t.Fatal("Close project should be disabled for the final project")
+	}
+	menuView := model.View()
+	menuPlain := ansi.Strip(menuView.Content)
+	if !strings.Contains(menuPlain, "Rename project") || !strings.Contains(menuPlain, "Close project") {
+		t.Fatalf("project menu is incomplete: %q", menuPlain)
+	}
+	if menuView.MouseMode != tea.MouseModeAllMotion || menuView.Cursor != nil {
+		t.Fatal("project menu should enable hover tracking and hide the terminal cursor")
+	}
+
+	menuGeometry := model.projectContextMenuGeometry()
+	_, _ = model.Update(tea.MouseClickMsg(tea.Mouse{
+		X: menuGeometry.x + 2, Y: menuGeometry.y + 1, Button: tea.MouseLeft,
+	}))
+	if model.projectMenu.open || !model.renameDialog.open || model.renameDialog.projectIndex != 0 {
+		t.Fatalf("Rename project should open the modal: menu=%#v dialog=%#v", model.projectMenu, model.renameDialog)
+	}
+	if !model.renameDialog.selectAll {
+		t.Fatal("the existing project name should start selected")
+	}
+	view := model.View()
+	plain := ansi.Strip(view.Content)
+	if !strings.Contains(plain, "Rename project") ||
+		!strings.Contains(plain, "Project name") ||
+		!strings.Contains(plain, "Cancel") ||
+		!strings.Contains(plain, "Save") {
+		t.Fatalf("rename dialog is incomplete: %q", plain)
+	}
+	lines := strings.Split(view.Content, "\n")
+	if len(lines) != 30 {
+		t.Fatalf("rename overlay height = %d, want 30", len(lines))
+	}
+	for row, line := range lines {
+		if got := ansi.StringWidth(line); got != 100 {
+			t.Fatalf("rename overlay row %d width = %d, want 100", row, got)
+		}
+	}
+
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Text: "release workspace", Code: 'r'}))
+	if got := string(model.renameDialog.value); got != "release workspace" {
+		t.Fatalf("typing should replace the selected name, got %q", got)
+	}
+	if cursor := model.View().Cursor; cursor == nil || !cursor.Blink || cursor.Shape != tea.CursorBar {
+		t.Fatalf("editing should expose a blinking bar cursor: %#v", cursor)
+	}
+
+	renameGeometry := model.projectRenameDialogGeometry()
+	_, _ = model.Update(tea.MouseMotionMsg(tea.Mouse{
+		X: renameGeometry.saveX + 1, Y: renameGeometry.buttonY,
+	}))
+	if model.renameDialog.hovered != projectRenameSave {
+		t.Fatal("hovering Save should highlight it")
+	}
+	_, _ = model.Update(tea.MouseClickMsg(tea.Mouse{
+		X: renameGeometry.saveX + 1, Y: renameGeometry.buttonY, Button: tea.MouseLeft,
+	}))
+	if model.renameDialog.open {
+		t.Fatal("clicking Save should close the rename dialog")
+	}
+	if model.mode != modeNavigate || model.focus != focusSidebar {
+		t.Fatal("closing rename should preserve sidebar navigation focus")
+	}
+	if got := model.tabs[0].title; got != "release workspace" {
+		t.Fatalf("project was renamed to %q", got)
+	}
+	if got := model.View().WindowTitle; got != "Split \u2014 release workspace" {
+		t.Fatalf("active window title should follow the project name, got %q", got)
+	}
+
+	_, _ = model.Update(tea.MouseClickMsg(tea.Mouse{
+		X: 2, Y: sidebarProjectStart, Button: tea.MouseRight,
+	}))
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Text: "r", Code: 'r'}))
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Text: "discarded", Code: 'd'}))
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if model.renameDialog.open || model.tabs[0].title != "release workspace" {
+		t.Fatal("Escape should cancel a pending rename")
+	}
+}
+
+func TestProjectContextMenuClosesEveryPaneInTargetProject(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+	_, _ = model.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+
+	model.splitActive(layout.Columns)
+	closedProject := model.tabs[0]
+	closedPaneIDs := append([]string(nil), closedProject.root.Leaves()...)
+	closedSessions := make(map[string]*terminal.Session, len(closedPaneIDs))
+	for _, paneID := range closedPaneIDs {
+		closedSessions[paneID] = model.panes[paneID].session
+	}
+	model.agents[closedPaneIDs[0]] = agent.State{
+		PaneID: closedPaneIDs[0], PID: 101, Kind: agent.KindCodex, Status: agent.StatusIdle,
+	}
+	model.newProject()
+	survivingProject := model.tabs[1]
+
+	_, _ = model.Update(tea.MouseClickMsg(tea.Mouse{
+		X: 2, Y: sidebarProjectStart, Button: tea.MouseRight,
+	}))
+	items := model.projectContextMenuItems()
+	if len(items) < 2 || !items[1].enabled {
+		t.Fatal("Close project should be enabled when another project exists")
+	}
+	geometry := model.projectContextMenuGeometry()
+	_, _ = model.Update(tea.MouseMotionMsg(tea.Mouse{
+		X: geometry.x + 2, Y: geometry.y + 2,
+	}))
+	if model.projectMenu.selected != 1 {
+		t.Fatal("hovering Close project should select it")
+	}
+	_, _ = model.Update(tea.MouseClickMsg(tea.Mouse{
+		X: geometry.x + 2, Y: geometry.y + 2, Button: tea.MouseLeft,
+	}))
+
+	if model.projectMenu.open || len(model.tabs) != 1 || model.tabs[0] != survivingProject {
+		t.Fatalf("target project was not removed cleanly: menu=%#v projects=%#v", model.projectMenu, model.tabs)
+	}
+	if model.activeTab != 0 || model.mode != modeNavigate || model.focus != focusSidebar {
+		t.Fatal("closing an earlier project should preserve the survivor with sidebar focus")
+	}
+	for _, paneID := range closedPaneIDs {
+		if _, exists := model.panes[paneID]; exists {
+			t.Fatalf("closed project pane %q remains in the model", paneID)
+		}
+		if _, exists := model.agents[paneID]; exists {
+			t.Fatalf("closed project agent %q remains in the sidebar state", paneID)
+		}
+		if state, _ := closedSessions[paneID].State(); state == terminal.Running {
+			t.Fatalf("closed project pane %q is still running", paneID)
+		}
+	}
+}
+
+func TestClosingActiveProjectSelectsNeighborAndKeepsFinalProject(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+
+	firstProject := model.tabs[0]
+	model.newProject()
+	closedPaneID := model.active().activePane
+	if !model.closeProject(1) {
+		t.Fatal("active project should close while a neighbor exists")
+	}
+	if len(model.tabs) != 1 || model.active() != firstProject {
+		t.Fatal("closing the active final row should select the previous project")
+	}
+	if _, exists := model.panes[closedPaneID]; exists {
+		t.Fatal("active project's pane remains after close")
+	}
+	if model.closeProject(0) {
+		t.Fatal("Split must refuse to close its final project")
+	}
+	if len(model.tabs) != 1 || model.active() != firstProject {
+		t.Fatal("refusing the final close should leave the project intact")
+	}
+}
+func TestSidebarBackgroundClickLeavesTerminalModeAndQDetaches(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+	_, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	model.mode = modeTerminal
+	model.focus = focusPanes
+
+	model.handleMouseClick(tea.Mouse{
+		X: 2, Y: sidebarProjectStart - 1, Button: tea.MouseLeft,
+	})
+	if model.mode != modeNavigate || model.focus != focusSidebar {
+		t.Fatal("clicking blank sidebar space should enter sidebar navigation focus")
+	}
+	if model.View().Cursor != nil {
+		t.Fatal("sidebar focus should hide the PowerShell cursor")
+	}
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Text: "q", Code: 'q'}))
+	if !model.TakeDetachRequest() {
+		t.Fatal("q after clicking the sidebar should detach instead of reaching PowerShell")
+	}
+}
+func TestProjectRenameRejectsBlankNames(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+
+	model.openProjectRenameDialog(0)
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace}))
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if !model.renameDialog.open || model.renameDialog.errorMessage == "" {
+		t.Fatal("a blank project name should keep the dialog open with an error")
+	}
+	if !strings.Contains(ansi.Strip(model.View().Content), "Project name cannot be empty") {
+		t.Fatal("blank-name validation should be visible in the dialog")
+	}
+}
+
 func TestSidebarCreatesAndSwitchesProjectsWithMouse(t *testing.T) {
 	model := New(t.TempDir())
 	defer model.Close()
@@ -450,7 +680,7 @@ func TestTerminalInputMarksAgentWorkingAndInterrupted(t *testing.T) {
 	}
 }
 
-func TestClickingSidebarAgentFocusesItsTerminal(t *testing.T) {
+func TestClickingSidebarAgentSelectsPaneButKeepsSidebarFocus(t *testing.T) {
 	model := New(t.TempDir())
 	defer model.Close()
 
@@ -465,6 +695,7 @@ func TestClickingSidebarAgentFocusesItsTerminal(t *testing.T) {
 		Kind:   agent.KindClaude,
 		Status: agent.StatusIdle,
 	}
+	model.mode = modeTerminal
 
 	agentRow := -1
 	for index, row := range model.sidebarRows() {
@@ -482,9 +713,9 @@ func TestClickingSidebarAgentFocusesItsTerminal(t *testing.T) {
 		Button: tea.MouseLeft,
 	})
 	if model.active().activePane != secondPane {
-		t.Fatalf("agent row focused %q, want %q", model.active().activePane, secondPane)
+		t.Fatalf("agent row selected %q, want %q", model.active().activePane, secondPane)
 	}
-	if model.mode != modeTerminal || model.focus != focusPanes {
-		t.Fatal("clicking an agent row should enter its live terminal")
+	if model.mode != modeNavigate || model.focus != focusSidebar {
+		t.Fatal("clicking an agent row should keep keyboard focus in the sidebar")
 	}
 }

@@ -22,7 +22,9 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForTerminalEvents(m.events)
 
 	case tea.PasteMsg:
-		if m.mode == modeTerminal && !m.contextMenu.open {
+		if m.renameDialog.open {
+			m.insertProjectRenameText(message.Content)
+		} else if m.mode == modeTerminal && !m.contextMenu.open {
 			if item := m.activePane(); item != nil && item.session != nil {
 				item.session.Paste(message.Content)
 			}
@@ -30,7 +32,11 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseClickMsg:
-		if m.contextMenu.open {
+		if m.renameDialog.open {
+			m.handleProjectRenameClick(message.Mouse())
+		} else if m.projectMenu.open {
+			m.handleProjectContextMenuClick(message.Mouse())
+		} else if m.contextMenu.open {
 			m.handlePaneContextMenuClick(message.Mouse())
 		} else {
 			m.handleMouseClick(message.Mouse())
@@ -38,12 +44,22 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMotionMsg:
-		if m.contextMenu.open {
+		if m.renameDialog.open {
+			m.handleProjectRenameMotion(message.Mouse())
+		} else if m.projectMenu.open {
+			m.handleProjectContextMenuMotion(message.Mouse())
+		} else if m.contextMenu.open {
 			m.handlePaneContextMenuMotion(message.Mouse())
 		}
 		return m, nil
 
 	case tea.KeyPressMsg:
+		if m.renameDialog.open {
+			return m.handleProjectRenameKey(message)
+		}
+		if m.projectMenu.open {
+			return m.handleProjectContextMenuKey(message)
+		}
 		if m.contextMenu.open {
 			return m.handlePaneContextMenuKey(message)
 		}
@@ -201,6 +217,43 @@ func (m *Model) handlePrefixKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleMouseClick(mouse tea.Mouse) {
+	sidebar := m.effectiveSidebarWidth()
+	if sidebar > 0 && mouse.X < sidebar {
+		if mouse.Button != tea.MouseLeft && mouse.Button != tea.MouseRight {
+			return
+		}
+		m.focusSidebarNavigation(m.activeTab)
+		m.notice = ""
+		row, hasRow := m.sidebarRowAt(mouse.Y)
+
+		if mouse.Button == tea.MouseRight {
+			if hasRow && row.kind == sidebarProjectRow {
+				m.openProjectContextMenu(mouse.X, mouse.Y, row.projectIndex)
+			}
+			return
+		}
+		if !hasRow {
+			return
+		}
+
+		switch row.kind {
+		case sidebarProjectRow:
+			m.selectTab(row.projectIndex)
+			m.focusSidebarNavigation(row.projectIndex)
+		case sidebarAgentRow:
+			m.selectTab(row.projectIndex)
+			if active := m.active(); active != nil {
+				active.activePane = row.paneID
+			}
+			m.focusSidebarNavigation(row.projectIndex)
+			m.persist()
+		case sidebarNewProjectRow:
+			m.newProject()
+			m.focusSidebarNavigation(m.activeTab)
+		}
+		return
+	}
+
 	if mouse.Button == tea.MouseRight {
 		if !m.workspaceRect().Contains(mouse.X, mouse.Y) {
 			return
@@ -218,41 +271,6 @@ func (m *Model) handleMouseClick(mouse tea.Mouse) {
 		return
 	}
 	if mouse.Button != tea.MouseLeft {
-		return
-	}
-
-	sidebar := m.effectiveSidebarWidth()
-	if sidebar > 0 && mouse.X < sidebar {
-		index := mouse.Y - sidebarProjectStart
-		rows := m.sidebarRows()
-		if index < 0 || index >= len(rows) {
-			return
-		}
-		row := rows[index]
-		switch row.kind {
-		case sidebarProjectRow:
-			m.sidebarCursor = row.projectIndex
-			m.selectTab(row.projectIndex)
-		case sidebarAgentRow:
-			m.sidebarCursor = row.projectIndex
-			m.selectTab(row.projectIndex)
-			active := m.active()
-			if active == nil {
-				return
-			}
-			active.activePane = row.paneID
-			item := m.panes[row.paneID]
-			if item != nil && item.session != nil {
-				state, _ := item.session.State()
-				if state == terminal.Running {
-					m.mode = modeTerminal
-					m.focus = focusPanes
-				}
-			}
-			m.persist()
-		case sidebarNewProjectRow:
-			m.newProject()
-		}
 		return
 	}
 
