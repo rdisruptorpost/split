@@ -7,12 +7,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 1
+const schemaVersion = 3
 
 type Snapshot struct {
 	ActiveProjectID   string
@@ -31,11 +30,9 @@ type Project struct {
 }
 
 type Pane struct {
-	ID                string
-	Profile           string
-	Title             string
-	WorkingDirectory  string
-	ProviderSessionID string
+	ID               string
+	Title            string
+	WorkingDirectory string
 }
 
 type Store struct {
@@ -79,7 +76,6 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	store.importSessionEvents()
 	return store, nil
 }
 
@@ -154,24 +150,31 @@ func (s *Store) migrate() error {
 				working_directory TEXT NOT NULL
 			)`,
 			`CREATE INDEX panes_project_id ON panes(project_id)`,
-			`CREATE TABLE session_bindings (
-				pane_id TEXT PRIMARY KEY,
-				provider TEXT NOT NULL,
-				session_id TEXT NOT NULL,
-				working_directory TEXT NOT NULL,
-				updated_at INTEGER NOT NULL
-			)`,
 		}
 		for _, statement := range statements {
 			if _, err := tx.Exec(statement); err != nil {
 				return fmt.Errorf("create state schema: %w", err)
 			}
 		}
-		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", schemaVersion)); err != nil {
-			return fmt.Errorf("record state schema version: %w", err)
-		}
+		version = 1
 	}
 
+	if version < 2 {
+		if _, err := tx.Exec(`UPDATE panes SET profile = 'powershell', title = 'PowerShell'`); err != nil {
+			return fmt.Errorf("migrate panes to terminal-only profiles: %w", err)
+		}
+	}
+	if version < 3 {
+		if _, err := tx.Exec(`DROP TABLE IF EXISTS session_bindings`); err != nil {
+			return fmt.Errorf("remove legacy agent bindings: %w", err)
+		}
+		if _, err := tx.Exec(`ALTER TABLE panes DROP COLUMN profile`); err != nil {
+			return fmt.Errorf("remove legacy pane profiles: %w", err)
+		}
+	}
+	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", schemaVersion)); err != nil {
+		return fmt.Errorf("record state schema version: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit state migration: %w", err)
 	}
@@ -215,30 +218,16 @@ func (s *Store) Load() (Snapshot, error) {
 
 	for projectIndex := range snapshot.Projects {
 		project := &snapshot.Projects[projectIndex]
-		paneRows, err := s.db.Query(`SELECT p.id, p.profile, p.title, p.working_directory,
-			COALESCE(b.session_id, ''), COALESCE(b.provider, '')
-			FROM panes p
-			LEFT JOIN session_bindings b ON b.pane_id = p.id
-			WHERE p.project_id = ? ORDER BY p.rowid`, project.ID)
+		paneRows, err := s.db.Query(`SELECT id, title, working_directory
+			FROM panes WHERE project_id = ? ORDER BY rowid`, project.ID)
 		if err != nil {
 			return Snapshot{}, fmt.Errorf("load panes for project %s: %w", project.ID, err)
 		}
 		for paneRows.Next() {
 			var pane Pane
-			var bindingProvider string
-			if err := paneRows.Scan(
-				&pane.ID,
-				&pane.Profile,
-				&pane.Title,
-				&pane.WorkingDirectory,
-				&pane.ProviderSessionID,
-				&bindingProvider,
-			); err != nil {
+			if err := paneRows.Scan(&pane.ID, &pane.Title, &pane.WorkingDirectory); err != nil {
 				paneRows.Close()
 				return Snapshot{}, fmt.Errorf("scan pane: %w", err)
-			}
-			if bindingProvider != "" && bindingProvider != pane.Profile {
-				pane.ProviderSessionID = ""
 			}
 			project.Panes = append(project.Panes, pane)
 		}
@@ -291,7 +280,7 @@ func (s *Store) Save(snapshot Snapshot) error {
 		}
 
 		for _, pane := range project.Panes {
-			if pane.ID == "" || pane.Profile == "" || pane.Title == "" || pane.WorkingDirectory == "" {
+			if pane.ID == "" || pane.Title == "" || pane.WorkingDirectory == "" {
 				return fmt.Errorf("project %s contains an incomplete pane", project.ID)
 			}
 			if _, exists := paneIDs[pane.ID]; exists {
@@ -299,26 +288,15 @@ func (s *Store) Save(snapshot Snapshot) error {
 			}
 			paneIDs[pane.ID] = struct{}{}
 			if _, err := tx.Exec(`INSERT INTO panes
-				(id, project_id, profile, title, working_directory)
-				VALUES (?, ?, ?, ?, ?)`,
-				pane.ID, project.ID, pane.Profile, pane.Title, pane.WorkingDirectory); err != nil {
+				(id, project_id, title, working_directory)
+				VALUES (?, ?, ?, ?)`,
+				pane.ID, project.ID, pane.Title, pane.WorkingDirectory); err != nil {
 				return fmt.Errorf("save pane %s: %w", pane.ID, err)
 			}
-			if pane.ProviderSessionID != "" {
-				if _, err := tx.Exec(`INSERT OR IGNORE INTO session_bindings
-					(pane_id, provider, session_id, working_directory, updated_at)
-					VALUES (?, ?, ?, ?, ?)`,
-					pane.ID, pane.Profile, pane.ProviderSessionID, pane.WorkingDirectory, time.Now().UnixMilli()); err != nil {
-					return fmt.Errorf("save session binding for pane %s: %w", pane.ID, err)
-				}
-			}
+
 		}
 	}
 
-	if _, err := tx.Exec(`DELETE FROM session_bindings
-		WHERE pane_id NOT IN (SELECT id FROM panes)`); err != nil {
-		return fmt.Errorf("remove stale session bindings: %w", err)
-	}
 	if _, err := tx.Exec(`INSERT INTO app_state
 		(singleton, active_project_id, sidebar_visible, next_project_number)
 		VALUES (1, ?, ?, ?)
@@ -332,34 +310,6 @@ func (s *Store) Save(snapshot Snapshot) error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit state save: %w", err)
-	}
-	return nil
-}
-
-func BindSessionFile(path, paneID, provider, sessionID, workingDirectory string) error {
-	store, err := Open(path)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-	return store.BindSession(paneID, provider, sessionID, workingDirectory)
-}
-
-func (s *Store) BindSession(paneID, provider, sessionID, workingDirectory string) error {
-	if paneID == "" || provider == "" || sessionID == "" {
-		return errors.New("pane id, provider, and session id are required")
-	}
-	_, err := s.db.Exec(`INSERT INTO session_bindings
-		(pane_id, provider, session_id, working_directory, updated_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(pane_id) DO UPDATE SET
-			provider = excluded.provider,
-			session_id = excluded.session_id,
-			working_directory = excluded.working_directory,
-			updated_at = excluded.updated_at`,
-		paneID, provider, sessionID, workingDirectory, time.Now().UnixMilli())
-	if err != nil {
-		return fmt.Errorf("bind agent session: %w", err)
 	}
 	return nil
 }

@@ -31,7 +31,7 @@ func (m *Model) View() tea.View {
 }
 
 func (m *Model) renderCursor() *tea.Cursor {
-	if m.launcherOpen || m.contextMenu.open || m.mode != modeTerminal || m.focus != focusPanes {
+	if m.contextMenu.open || m.mode != modeTerminal || m.focus != focusPanes {
 		return nil
 	}
 	active := m.active()
@@ -49,8 +49,7 @@ func (m *Model) renderCursor() *tea.Cursor {
 	rect, ok := active.root.Rects(m.workspaceRect())[item.id]
 	bodyWidth := max(1, rect.Width-2)
 	bodyHeight := max(1, rect.Height-2)
-	if !ok || agentPaneTooSmall(item, bodyWidth, bodyHeight) ||
-		cursorState.X < 0 || cursorState.Y < 0 ||
+	if !ok || cursorState.X < 0 || cursorState.Y < 0 ||
 		cursorState.X >= bodyWidth || cursorState.Y >= bodyHeight {
 		return nil
 	}
@@ -94,9 +93,7 @@ func (m *Model) render() string {
 			main,
 		)
 	}
-	if m.launcherOpen {
-		result = m.renderLauncherOverlay(result)
-	}
+
 	if m.contextMenu.open {
 		result = m.renderPaneContextMenuOverlay(result)
 	}
@@ -106,12 +103,10 @@ func (m *Model) render() string {
 func (m *Model) renderSidebar(width, height int) string {
 	contentWidth := max(1, width-1)
 	lines := make([]string, 0, height)
-	lines = append(lines,
-		" "+styles.logo.Render("SPLIT")+styles.muted.Render(" · ")+styles.text.Bold(true).Render(m.projectName()),
-		" "+styles.muted.Render(shortenPath(m.root, contentWidth-1)),
-		"",
-		" "+styles.eyebrow.Render("PROJECTS"),
-	)
+	for _, line := range renderSidebarBrand() {
+		lines = append(lines, " "+line)
+	}
+	lines = append(lines, " "+styles.eyebrow.Render("PROJECTS"))
 
 	for index, item := range m.tabs {
 		active := index == m.activeTab
@@ -124,13 +119,7 @@ func (m *Model) renderSidebar(width, height int) string {
 			label = "  " + label
 		}
 
-		count := len(item.root.Leaves())
-		suffix := m.tabProfileSummary(item)
-		if suffix != "" {
-			suffix += fmt.Sprintf(" %d", count)
-		} else {
-			suffix = fmt.Sprintf("%d", count)
-		}
+		suffix := fmt.Sprintf("%d", len(item.root.Leaves()))
 		gap := max(1, contentWidth-ansi.StringWidth(label)-ansi.StringWidth(suffix)-1)
 		row := label + strings.Repeat(" ", gap) + styles.muted.Render(suffix)
 		if active {
@@ -156,7 +145,7 @@ func (m *Model) renderSidebar(width, height int) string {
 		lines = append(lines, "")
 	}
 	lines = append(lines,
-		" "+styles.muted.Render("ctrl+b")+" "+styles.text.Render("menu")+"  "+styles.muted.Render("q")+" "+styles.text.Render("quit"),
+		" "+styles.muted.Render("ctrl+b")+" "+styles.text.Render("menu")+"  "+styles.muted.Render("q")+" "+styles.text.Render("detach"),
 		" "+styles.muted.Render("tab")+"    "+styles.text.Render("switch focus"),
 	)
 
@@ -170,54 +159,6 @@ func (m *Model) renderSidebar(width, height int) string {
 		output[row] = fitLine(line, contentWidth) + border
 	}
 	return strings.Join(output, "\n")
-}
-
-func (m *Model) renderLauncherOverlay(base string) string {
-	modalWidth := min(60, max(36, m.width-8))
-	innerWidth := max(28, modalWidth-4)
-
-	title := lipgloss.NewStyle().Foreground(palette.accent).Bold(true).Render("Launch a pane")
-	content := title + "\n" + styles.muted.Render("Choose a process, then choose where it opens.") + "\n\n"
-	for index, option := range m.launchOptions {
-		status := lipgloss.NewStyle().Foreground(palette.green).Render("ready")
-		if !option.available {
-			status = lipgloss.NewStyle().Foreground(palette.red).Render("not found")
-		}
-		heading := option.title
-		gap := max(1, innerWidth-ansi.StringWidth(heading)-ansi.StringWidth(status))
-		row := heading + strings.Repeat(" ", gap) + status
-		detail := "  " + option.description
-		block := fitLine(row, innerWidth) + "\n" + fitLine(styles.muted.Render(detail), innerWidth)
-		if index == m.launcherSelected {
-			block = lipgloss.NewStyle().
-				Width(innerWidth).
-				Foreground(palette.text).
-				Background(palette.surfaceAlt).
-				Bold(true).
-				Render(block)
-		}
-		content += block + "\n"
-	}
-	content += "\n" + styles.muted.Render("enter/v split right   s split down   t new project   esc cancel")
-
-	modal := lipgloss.NewStyle().
-		Width(innerWidth).
-		Foreground(palette.text).
-		Background(palette.surface).
-		Padding(0, 1).
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(palette.accent).
-		Render(content)
-	modalHeight := lipgloss.Height(modal)
-	modalRenderedWidth := lipgloss.Width(modal)
-	x := max(0, (m.width-modalRenderedWidth)/2)
-	y := max(0, (m.height-modalHeight)/2)
-
-	composed := lipgloss.NewCompositor(
-		lipgloss.NewLayer(fitBlock(base, m.width, m.height)).X(0).Y(0).Z(0),
-		lipgloss.NewLayer(modal).X(x).Y(y).Z(1),
-	).Render()
-	return fitBlock(composed, m.width, m.height)
 }
 
 func (m *Model) renderTabStatus(item *tab) string {
@@ -254,27 +195,6 @@ func (m *Model) renderTabStatus(item *tab) string {
 	default:
 		return styles.muted.Render("○")
 	}
-}
-
-func (m *Model) tabProfileSummary(item *tab) string {
-	seen := make(map[paneProfile]bool)
-	labels := make([]string, 0, 3)
-	for _, paneID := range item.root.Leaves() {
-		current := m.panes[paneID]
-		if current == nil || current.kind != paneTerminal || seen[current.profile] {
-			continue
-		}
-		seen[current.profile] = true
-		switch current.profile {
-		case profileCodex:
-			labels = append(labels, "CX")
-		case profileClaude:
-			labels = append(labels, "CL")
-		default:
-			labels = append(labels, "PS")
-		}
-	}
-	return strings.Join(labels, "·")
 }
 
 func (m *Model) renderWorkspace(width, height int) string {
@@ -376,19 +296,7 @@ func (m *Model) renderTerminal(item *pane, width, height int) string {
 	if item.session == nil {
 		return fitBlock(styles.muted.Render("Starting terminal…"), width, height)
 	}
-	if agentPaneTooSmall(item, width, height) {
-		message := lipgloss.NewStyle().Foreground(palette.yellow).Bold(true).Render("Agent pane too narrow") +
-			"\n\n" + styles.muted.Render("ctrl+b  =  balance panes") +
-			"\n" + styles.muted.Render("ctrl+b  x  close a pane") +
-			"\n" + styles.muted.Render("launcher t  new project")
-		return placeBlock(message, width, height)
-	}
 	return fitBlock(item.session.Render(), width, height)
-}
-
-func agentPaneTooSmall(item *pane, width, height int) bool {
-	return item != nil && item.kind == paneTerminal && item.profile != profileShell &&
-		(width < agentMinimumBodyWidth || height < agentMinimumBodyHeight)
 }
 
 func (m *Model) renderTerminalState(item *pane) string {
@@ -432,7 +340,7 @@ func (m *Model) renderOverview(width, height int) string {
 			key.Render("ctrl+b  v") + "   split right\n" +
 			key.Render("ctrl+b  s") + "   split down\n" +
 			key.Render("ctrl+b  c") + "   new project\n" +
-			key.Render("ctrl+b  a") + "   launch an agent\n" +
+
 			key.Render("ctrl+b  x") + "   close focused pane\n" +
 			key.Render("ctrl+b  hjkl") + " move focused pane\n" +
 			key.Render("ctrl+b  =") + "   balance pane sizes\n" +
@@ -442,7 +350,7 @@ func (m *Model) renderOverview(width, height int) string {
 			lipgloss.NewStyle().Foreground(palette.green).Render("✓") + " split-tree layout\n" +
 			lipgloss.NewStyle().Foreground(palette.green).Render("✓") + " prefix/navigation modes\n" +
 			lipgloss.NewStyle().Foreground(palette.green).Render("✓") + " live ConPTY terminal\n" +
-			lipgloss.NewStyle().Foreground(palette.green).Render("✓") + " Codex and Claude launcher"
+			lipgloss.NewStyle().Foreground(palette.green).Render("✓") + " persistent terminal runtime"
 	return fitBlock(content, width, height)
 }
 
@@ -452,9 +360,6 @@ func (m *Model) renderStatus(width int) string {
 	if m.contextMenu.open {
 		modeLabel = " MENU "
 		modeColor = palette.secondary
-	} else if m.launcherOpen {
-		modeLabel = " LAUNCH "
-		modeColor = palette.yellow
 	} else {
 		switch m.mode {
 		case modeTerminal:
@@ -474,14 +379,12 @@ func (m *Model) renderStatus(width int) string {
 	hint := " "
 	if m.contextMenu.open {
 		hint += "click an action  hover to select  esc close"
-	} else if m.launcherOpen {
-		hint += "enter split right  s split down  t new project  esc cancel"
 	} else {
 		switch m.mode {
 		case modeTerminal:
 			hint += "ctrl+b  command prefix"
 		case modePrefix:
-			hint += "a launch  v/s split  x close  hjkl move pane  = balance  n navigate"
+			hint += "v/s split  x close  hjkl move pane  = balance  n navigate  q detach"
 		default:
 			hint += "click terminal  right-click pane menu  arrows/hjkl focus  ctrl+b commands"
 		}

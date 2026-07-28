@@ -1,14 +1,13 @@
 package state
 
 import (
-	"os"
+	"database/sql"
 	"path/filepath"
 	"reflect"
 	"testing"
-	"time"
 )
 
-func TestStoreRoundTripPreservesProjectOrderLayoutAndSessions(t *testing.T) {
+func TestStoreRoundTripPreservesWorkspaceMetadata(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	store, err := Open(path)
 	if err != nil {
@@ -17,30 +16,23 @@ func TestStoreRoundTripPreservesProjectOrderLayoutAndSessions(t *testing.T) {
 	defer store.Close()
 
 	snapshot := Snapshot{
-		ActiveProjectID:   "project-b",
-		SidebarVisible:    false,
-		NextProjectNumber: 7,
+		ActiveProjectID: "project-b", SidebarVisible: false, NextProjectNumber: 7,
 		Projects: []Project{
 			{
 				ID: "project-a", Name: "alpha", RootPath: `C:\work\alpha`, ActivePaneID: "pane-a",
 				LayoutJSON: []byte(`{"pane_id":"pane-a"}`),
-				Panes: []Pane{{
-					ID: "pane-a", Profile: "codex", Title: "Codex", WorkingDirectory: `C:\work\alpha`, ProviderSessionID: "thr_alpha",
-				}},
+				Panes:      []Pane{{ID: "pane-a", Title: "PowerShell", WorkingDirectory: `C:\work\alpha`}},
 			},
 			{
 				ID: "project-b", Name: "beta", RootPath: `C:\work\beta`, ActivePaneID: "pane-b",
 				LayoutJSON: []byte(`{"pane_id":"pane-b"}`),
-				Panes: []Pane{{
-					ID: "pane-b", Profile: "powershell", Title: "PowerShell", WorkingDirectory: `C:\work\beta`,
-				}},
+				Panes:      []Pane{{ID: "pane-b", Title: "PowerShell", WorkingDirectory: `C:\work\beta`}},
 			},
 		},
 	}
 	if err := store.Save(snapshot); err != nil {
 		t.Fatal(err)
 	}
-
 	loaded, err := store.Load()
 	if err != nil {
 		t.Fatal(err)
@@ -50,126 +42,36 @@ func TestStoreRoundTripPreservesProjectOrderLayoutAndSessions(t *testing.T) {
 	}
 }
 
-func TestSessionBindingSurvivesSnapshotWritesAndCanArriveEarly(t *testing.T) {
+func TestVersionOneAgentStateMigratesToTerminalOnlySchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`CREATE TABLE app_state (singleton INTEGER PRIMARY KEY, active_project_id TEXT NOT NULL, sidebar_visible INTEGER NOT NULL, next_project_number INTEGER NOT NULL)`,
+		`CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, root_path TEXT NOT NULL, sort_order INTEGER NOT NULL, active_pane_id TEXT NOT NULL, layout_json TEXT NOT NULL)`,
+		`CREATE UNIQUE INDEX projects_sort_order ON projects(sort_order)`,
+		`CREATE TABLE panes (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, profile TEXT NOT NULL, title TEXT NOT NULL, working_directory TEXT NOT NULL)`,
+		`CREATE INDEX panes_project_id ON panes(project_id)`,
+		`CREATE TABLE session_bindings (pane_id TEXT PRIMARY KEY, provider TEXT NOT NULL, session_id TEXT NOT NULL, working_directory TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
+		`INSERT INTO app_state VALUES (1, 'project-1', 1, 2)`,
+		`INSERT INTO projects VALUES ('project-1', 'legacy', 'C:\work', 0, 'pane-1', '{"pane_id":"pane-1"}')`,
+		`INSERT INTO panes VALUES ('pane-1', 'project-1', 'codex', 'Codex', 'C:\work')`,
+		`INSERT INTO session_bindings VALUES ('pane-1', 'codex', 'session-1', 'C:\work', 1)`,
+		`PRAGMA user_version=1`,
+	}
+	for _, statement := range statements {
+		if _, err := database.Exec(statement); err != nil {
+			database.Close()
+			t.Fatalf("prepare v1 database: %v\nstatement: %s", err, statement)
+		}
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
 	store, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-
-	if err := store.BindSession("pane-1", "codex", "thr_first", `C:\work`); err != nil {
-		t.Fatal(err)
-	}
-	snapshot := Snapshot{
-		ActiveProjectID: "project-1", SidebarVisible: true, NextProjectNumber: 2,
-		Projects: []Project{{
-			ID: "project-1", Name: "work", RootPath: `C:\work`, ActivePaneID: "pane-1",
-			LayoutJSON: []byte(`{"pane_id":"pane-1"}`),
-			Panes:      []Pane{{ID: "pane-1", Profile: "codex", Title: "Codex", WorkingDirectory: `C:\work`}},
-		}},
-	}
-	if err := store.Save(snapshot); err != nil {
-		t.Fatal(err)
-	}
-
-	loaded, err := store.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := loaded.Projects[0].Panes[0].ProviderSessionID; got != "thr_first" {
-		t.Fatalf("early hook binding was lost: %q", got)
-	}
-
-	if err := store.BindSession("pane-1", "codex", "thr_resumed", `C:\work`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Save(snapshot); err != nil {
-		t.Fatal(err)
-	}
-	loaded, err = store.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := loaded.Projects[0].Panes[0].ProviderSessionID; got != "thr_resumed" {
-		t.Fatalf("newer hook binding was overwritten by an old snapshot: %q", got)
-	}
-}
-
-func TestBindSessionFileWhileApplicationStoreIsOpen(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-
-	if err := BindSessionFile(path, "pane-1", "codex", "thread-1", `C:\work`); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestBindSessionFileWaitsForApplicationWrite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-
-	tx, err := store.db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.Exec(`INSERT INTO session_bindings
-		(pane_id, provider, session_id, working_directory, updated_at)
-		VALUES ('other-pane', 'codex', 'other-thread', 'C:\work', 1)`); err != nil {
-		t.Fatal(err)
-	}
-
-	result := make(chan error, 1)
-	go func() {
-		result <- BindSessionFile(path, "pane-1", "codex", "thread-1", `C:\work`)
-	}()
-	time.Sleep(100 * time.Millisecond)
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-result; err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestQueuedSessionEventImportsWhenStoreOpens(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot := Snapshot{
-		ActiveProjectID: "project-1", SidebarVisible: true, NextProjectNumber: 2,
-		Projects: []Project{{
-			ID: "project-1", Name: "work", RootPath: `C:\work`, ActivePaneID: "pane-1",
-			LayoutJSON: []byte(`{"pane_id":"pane-1"}`),
-			Panes:      []Pane{{ID: "pane-1", Profile: "codex", Title: "Codex", WorkingDirectory: `C:\work`}},
-		}},
-	}
-	if err := store.Save(snapshot); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := QueueSessionEvent(path, "pane-1", "codex", "thread-spooled", `C:\work`); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := os.ReadDir(sessionEventsDirectory(path))
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("expected one queued event, entries=%d err=%v", len(entries), err)
-	}
-
-	store, err = Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,63 +80,37 @@ func TestQueuedSessionEventImportsWhenStoreOpens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := loaded.Projects[0].Panes[0].ProviderSessionID; got != "thread-spooled" {
-		t.Fatalf("queued session was not imported: %q", got)
+	if got := loaded.Projects[0].Panes[0].Title; got != "PowerShell" {
+		t.Fatalf("legacy pane title was not normalized: %q", got)
 	}
-	entries, err = os.ReadDir(sessionEventsDirectory(path))
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("imported event was not removed, entries=%d err=%v", len(entries), err)
+	var version int
+	if err := store.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != schemaVersion {
+		t.Fatalf("unexpected migrated schema version %d: %v", version, err)
+	}
+	var legacyTableCount int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='session_bindings'`).Scan(&legacyTableCount); err != nil {
+		t.Fatal(err)
+	}
+	if legacyTableCount != 0 {
+		t.Fatal("legacy session_bindings table should be removed")
 	}
 }
 
-func TestSessionLaunchClaimMapsSanitizedHookToPane(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot := Snapshot{
-		ActiveProjectID: "project-1", SidebarVisible: true, NextProjectNumber: 2,
-		Projects: []Project{{
-			ID: "project-1", Name: "work", RootPath: `C:\work`, ActivePaneID: "pane-1",
-			LayoutJSON: []byte(`{"pane_id":"pane-1"}`),
-			Panes:      []Pane{{ID: "pane-1", Profile: "codex", Title: "Codex", WorkingDirectory: `C:\work`}},
-		}},
-	}
-	if err := store.Save(snapshot); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := RegisterSessionLaunch(path, "pane-1", "codex", `C:\work`); err != nil {
-		t.Fatal(err)
-	}
-	if !HasPendingSessionLaunch(path, "codex") {
-		t.Fatal("registered Codex launch was not found")
-	}
-	matched, err := ClaimSessionEvent(path, "codex", "019fa784-9e07-76e0-b202-851e53e4ae0b", `C:\work`, "", "startup")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !matched {
-		t.Fatal("session hook did not claim its pane launch")
-	}
-	if HasPendingSessionLaunch(path, "codex") {
-		t.Fatal("claimed launch was not consumed")
-	}
-
-	store, err = Open(path)
+func TestStoreRejectsDuplicatePaneIDs(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	loaded, err := store.Load()
-	if err != nil {
-		t.Fatal(err)
+
+	snapshot := Snapshot{
+		ActiveProjectID: "one", SidebarVisible: true, NextProjectNumber: 2,
+		Projects: []Project{
+			{ID: "one", Name: "one", RootPath: `C:\one`, ActivePaneID: "pane", LayoutJSON: []byte(`{"pane_id":"pane"}`), Panes: []Pane{{ID: "pane", Title: "PowerShell", WorkingDirectory: `C:\one`}}},
+			{ID: "two", Name: "two", RootPath: `C:\two`, ActivePaneID: "pane", LayoutJSON: []byte(`{"pane_id":"pane"}`), Panes: []Pane{{ID: "pane", Title: "PowerShell", WorkingDirectory: `C:\two`}}},
+		},
 	}
-	if got := loaded.Projects[0].Panes[0].ProviderSessionID; got != "019fa784-9e07-76e0-b202-851e53e4ae0b" {
-		t.Fatalf("claimed session was not imported: %q", got)
+	if err := store.Save(snapshot); err == nil {
+		t.Fatal("duplicate pane ids should be rejected")
 	}
 }

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -14,13 +13,11 @@ import (
 )
 
 const (
-	defaultWidth           = 120
-	defaultHeight          = 36
-	sidebarWidth           = 24
-	sidebarProjectStart    = 4
-	statusHeight           = 1
-	agentMinimumBodyWidth  = 38
-	agentMinimumBodyHeight = 8
+	defaultWidth        = 120
+	defaultHeight       = 36
+	sidebarWidth        = 24
+	sidebarProjectStart = 5
+	statusHeight        = 1
 )
 
 type mode uint8
@@ -45,33 +42,14 @@ const (
 	paneTerminal
 )
 
-type paneProfile uint8
-
-const (
-	profileShell paneProfile = iota
-	profileCodex
-	profileClaude
-)
-
-type launchOption struct {
-	profile     paneProfile
-	title       string
-	description string
-	command     terminal.Command
-	available   bool
-}
-
 type pane struct {
-	id                string
-	title             string
-	kind              paneKind
-	profile           paneProfile
-	cwd               string
-	providerSessionID string
-	resumeSession     bool
-	started           bool
-	session           *terminal.Session
-	err               error
+	id      string
+	title   string
+	kind    paneKind
+	cwd     string
+	started bool
+	session *terminal.Session
+	err     error
 }
 
 type tab struct {
@@ -102,38 +80,14 @@ type Model struct {
 	events chan terminal.Event
 	notice string
 
-	launchOptions    []launchOption
-	launcherOpen     bool
-	launcherSelected int
-	contextMenu      paneContextMenuState
+	contextMenu     paneContextMenuState
+	detachRequested bool
 
 	store *state.Store
 }
 
 type terminalBatchMsg struct {
 	events []terminal.Event
-}
-
-func discoverLaunchOptions(root string) []launchOption {
-	codexCommand, codexErr := terminal.ResolveCommand("codex", root)
-	claudeCommand, claudeErr := terminal.ResolveCommand("claude", root)
-	return []launchOption{
-		{
-			profile: profileShell, title: "PowerShell",
-			description: "A general-purpose shell in this workspace",
-			command:     terminal.DefaultShell(root), available: true,
-		},
-		{
-			profile: profileCodex, title: "Codex",
-			description: "OpenAI Codex CLI attached to this repository",
-			command:     codexCommand, available: codexErr == nil,
-		},
-		{
-			profile: profileClaude, title: "Claude Code",
-			description: "Claude Code CLI attached to this repository",
-			command:     claudeCommand, available: claudeErr == nil,
-		},
-	}
 }
 
 func New(root string) *Model {
@@ -154,7 +108,7 @@ func newModel(root string) *Model {
 		events:            make(chan terminal.Event, 128),
 		nextProjectNumber: 2,
 	}
-	model.launchOptions = discoverLaunchOptions(root)
+
 	return model
 }
 
@@ -205,42 +159,15 @@ func (m *Model) newOverviewPane() *pane {
 }
 
 func (m *Model) newTerminalPane(title string) *pane {
-	return m.newPane(title, profileShell, "", false)
+	return m.newPane(title)
 }
 
-func (m *Model) newProfilePane(profile paneProfile) *pane {
-	for _, option := range m.launchOptions {
-		if option.profile != profile {
-			continue
-		}
-		if !option.available {
-			m.notice = option.title + " was not found on PATH"
-			return nil
-		}
-		sessionID := ""
-		if profile == profileClaude {
-			var err error
-			sessionID, err = newSessionUUID()
-			if err != nil {
-				m.notice = "Could not allocate a Claude session id: " + err.Error()
-				return nil
-			}
-		}
-		return m.newPane(option.title, option.profile, sessionID, false)
-	}
-	m.notice = "Unknown launch profile"
-	return nil
-}
-
-func (m *Model) newPane(title string, profile paneProfile, providerSessionID string, resume bool) *pane {
+func (m *Model) newPane(title string) *pane {
 	item := &pane{
-		id:                m.newID("pane"),
-		title:             title,
-		kind:              paneTerminal,
-		profile:           profile,
-		cwd:               m.activeProjectRoot(),
-		providerSessionID: providerSessionID,
-		resumeSession:     resume,
+		id:    m.newID("pane"),
+		title: title,
+		kind:  paneTerminal,
+		cwd:   m.activeProjectRoot(),
 	}
 	m.panes[item.id] = item
 	m.startPane(item)
@@ -252,63 +179,13 @@ func (m *Model) startPane(item *pane) {
 		return
 	}
 	item.started = true
-	command, err := m.commandForPane(item)
-	if err != nil {
-		item.err = err
-		m.notice = item.title + " unavailable: " + err.Error()
-		return
-	}
-	if m.store != nil && (item.profile == profileCodex || item.profile == profileClaude) {
-		provider := profileStorageName(item.profile)
-		if err := state.RegisterSessionLaunch(m.store.Path(), item.id, provider, item.cwd); err != nil {
-			_ = state.AppendHookDiagnostic(m.store.Path(), provider, item.id, fmt.Errorf("register agent launch: %w", err))
-		}
-	}
-	session, err := terminal.Start(item.id, command, 80, 24, m.events)
+	session, err := terminal.Start(item.id, terminal.DefaultShell(item.cwd), 80, 24, m.events)
 	if err != nil {
 		item.err = err
 		m.notice = item.title + " unavailable: " + err.Error()
 		return
 	}
 	item.session = session
-}
-
-func (m *Model) commandForPane(item *pane) (terminal.Command, error) {
-	if item.profile == profileShell {
-		return terminal.DefaultShell(item.cwd), nil
-	}
-	for _, option := range m.launchOptions {
-		if option.profile != item.profile {
-			continue
-		}
-		if !option.available {
-			return terminal.Command{}, fmt.Errorf("%s was not found on PATH", option.title)
-		}
-		command := option.command
-		command.Args = append([]string(nil), command.Args...)
-		command.Dir = item.cwd
-		command.Env = map[string]string{
-			"SPLIT_PANE_ID":  item.id,
-			"SPLIT_PROVIDER": profileStorageName(item.profile),
-		}
-		if m.store != nil {
-			command.Env["SPLIT_STATE_DB"] = m.store.Path()
-		}
-		if item.providerSessionID != "" {
-			switch item.profile {
-			case profileCodex:
-				command.Args = append(command.Args, "resume", item.providerSessionID)
-			case profileClaude:
-				flag := "--session-id"
-				if item.resumeSession {
-					flag = "--resume"
-				}
-				command.Args = append(command.Args, flag, item.providerSessionID)
-			}
-		}
-		return command, nil
-	}
-	return terminal.Command{}, errors.New("unknown launch profile")
 }
 
 func (m *Model) active() *tab {
@@ -367,18 +244,11 @@ func (m *Model) resizeActivePanes() {
 }
 
 func (m *Model) splitActive(axis layout.Axis) {
-	m.splitActiveProfile(profileShell, axis)
-}
-
-func (m *Model) splitActiveProfile(profile paneProfile, axis layout.Axis) {
 	active := m.active()
 	if active == nil {
 		return
 	}
-	item := m.newProfilePane(profile)
-	if item == nil {
-		return
-	}
+	item := m.newTerminalPane("PowerShell")
 	if !active.root.Split(active.activePane, item.id, axis) {
 		if item.session != nil {
 			item.session.Close()
@@ -390,11 +260,10 @@ func (m *Model) splitActiveProfile(profile paneProfile, axis layout.Axis) {
 	layout.Equalize(active.root)
 	m.mode = modeNavigate
 	m.focus = focusPanes
-	m.notice = "Created and balanced a new " + item.title + " pane"
+	m.notice = "Created and balanced a new PowerShell pane"
 	m.resizeActivePanes()
 	m.persist()
 }
-
 func (m *Model) newProject() {
 	shell := m.newTerminalPane("PowerShell")
 	title := fmt.Sprintf("project %d", m.nextProjectNumber)
@@ -405,19 +274,11 @@ func (m *Model) newProject() {
 }
 
 func (m *Model) newTab() {
-	m.newTabProfile(profileShell)
-}
-
-func (m *Model) newTabProfile(profile paneProfile) {
-	item := m.newProfilePane(profile)
-	if item == nil {
-		return
-	}
-	m.appendTab(item, profileTabTitle(profile, len(m.tabs)+1))
-	m.notice = "Created a new " + item.title + " project"
+	item := m.newTerminalPane("PowerShell")
+	m.appendTab(item, fmt.Sprintf("terminal %d", len(m.tabs)+1))
+	m.notice = "Created a new PowerShell project"
 	m.persist()
 }
-
 func (m *Model) appendTab(item *pane, title string) {
 	m.tabs = append(m.tabs, &tab{
 		id:         m.newID("tab"),
@@ -435,54 +296,6 @@ func (m *Model) activateLastTab() {
 	m.mode = modeNavigate
 	m.focus = focusPanes
 	m.resizeActivePanes()
-}
-
-func profileTabTitle(profile paneProfile, index int) string {
-	switch profile {
-	case profileCodex:
-		return fmt.Sprintf("codex %d", index)
-	case profileClaude:
-		return fmt.Sprintf("claude %d", index)
-	default:
-		return fmt.Sprintf("terminal %d", index)
-	}
-}
-
-func (m *Model) openLauncher() {
-	m.launcherOpen = true
-	m.launcherSelected = 0
-	for index := 1; index < len(m.launchOptions); index++ {
-		if m.launchOptions[index].available {
-			m.launcherSelected = index
-			break
-		}
-	}
-	m.mode = modeNavigate
-	m.notice = ""
-}
-
-func (m *Model) moveLauncher(delta int) {
-	if len(m.launchOptions) == 0 {
-		return
-	}
-	m.launcherSelected = (m.launcherSelected + delta + len(m.launchOptions)) % len(m.launchOptions)
-}
-
-func (m *Model) launchSelected(axis layout.Axis, inNewTab bool) {
-	if m.launcherSelected < 0 || m.launcherSelected >= len(m.launchOptions) {
-		return
-	}
-	option := m.launchOptions[m.launcherSelected]
-	if !option.available {
-		m.notice = option.title + " was not found on PATH"
-		return
-	}
-	m.launcherOpen = false
-	if inNewTab {
-		m.newTabProfile(option.profile)
-		return
-	}
-	m.splitActiveProfile(option.profile, axis)
 }
 
 func (m *Model) closeActivePane() {
@@ -616,6 +429,33 @@ func (m *Model) setNoticeFromEvents(events []terminal.Event) {
 			}
 		}
 	}
+}
+
+// TerminalEvents exposes the process update stream to the detached runtime.
+func (m *Model) TerminalEvents() <-chan terminal.Event {
+	return m.events
+}
+
+// ApplyTerminalEvents updates notices after the runtime drains terminal output.
+func (m *Model) ApplyTerminalEvents(events []terminal.Event) {
+	m.setNoticeFromEvents(events)
+}
+
+// TakeDetachRequest reports and clears a client detach request.
+func (m *Model) TakeDetachRequest() bool {
+	requested := m.detachRequested
+	m.detachRequested = false
+	return requested
+}
+
+// ClientDetached closes transient UI state without closing any terminal.
+func (m *Model) ClientDetached() {
+	m.contextMenu = paneContextMenuState{}
+	m.mode = modeNavigate
+	m.modeBeforePrefix = modeNavigate
+	m.focus = focusPanes
+	m.detachRequested = false
+	m.persist()
 }
 
 func waitForTerminalEvents(events <-chan terminal.Event) tea.Cmd {

@@ -1,19 +1,20 @@
 # Split
 
-Split is a terminal-native workspace for running coding agents side by side.
-The current checkpoint is a Bubble Tea v2 workspace foundation with:
+Split is a terminal-native workspace for running shells and coding agents side by side. It combines a compact project sidebar, tmux-style panes, real Windows ConPTY terminals, and a persistent background runtime.
 
-- a compact, sidebar-only project switcher;
-- border-embedded pane titles that leave more room for terminal content;
-- independent project workspaces with recursive tmux-style split layouts and automatic balancing;
-- terminal, navigation, and one-shot prefix modes;
-- real processes hosted through Windows ConPTY;
-- terminal emulation and a native blinking cursor through Charm's headless `x/vt` package;
-- a neutral graphite theme with restrained warm-gray and state-color accents;
-- a launcher for PowerShell, Codex CLI, and Claude Code;
-- per-pane profile badges and live, exited, or failed process state;
-- clickable sidebar project rows, a `+ New project` control, and one-click terminal input focus;
-- SQLite-backed project, pane-layout, and agent-session restoration.
+Every pane is an ordinary PowerShell terminal. Split does not special-case Codex, Claude Code, or another terminal application: click a pane and type the same command you would use in Windows Terminal. This also means provider-native commands for starting or resuming conversations work without Split needing provider hooks or transcript metadata.
+
+## Current foundation
+
+- Bubble Tea v2 interface with a neutral, high-contrast graphite theme;
+- sidebar-only project switching and a clickable `+ New project` row;
+- recursive split-tree layouts with movement, closing, and automatic balancing;
+- keyboard prefix controls plus a hoverable right-click pane menu;
+- one-click mouse focus for terminal input;
+- real PowerShell processes hosted through Windows ConPTY;
+- headless terminal emulation and a native blinking cursor through Charm's `x/vt` package;
+- SQLite persistence for project order, names, roots, pane working directories, focus, and complete split geometry;
+- a per-user background runtime that keeps live terminal processes and their in-memory terminal buffers alive while the UI is detached.
 
 ## Run
 
@@ -21,31 +22,41 @@ The current checkpoint is a Bubble Tea v2 workspace foundation with:
 go run .
 ```
 
-The first build may download the Go 1.25 toolchain and module dependencies.
-
-For exact Codex and Claude session restoration, build Split and install its
-session-start hooks:
+Or build a review binary:
 
 ```powershell
-go build -o split.exe .
-.\split.exe hooks install
+go build -o split.next.exe .
+.\split.next.exe
 ```
 
-The installer merges Split's hooks with existing provider configuration and
-creates a one-time `.split-backup` beside each changed file. Re-run it if the
-Split executable moves to a different path.
+The visible Split process is now a lightweight client. On first launch it starts a hidden local runtime automatically, then connects over a current-user-only Windows named pipe. Subsequent launches reconnect to that runtime.
 
-## Persistence
+Normal quit is detach: press `q` in navigation mode, use `Ctrl+B`, then `q`, or close the terminal window. Your PowerShell, Codex, Claude, and other child processes continue running. To deliberately terminate every pane and stop the runtime, run:
 
-Split stores its state in `%LOCALAPPDATA%\Split\state.db`. It remembers project
-names and order, roots, the selected project and pane, sidebar visibility, pane
-profiles and working directories, and each project's complete split tree and
-ratios.
+```powershell
+.\split.next.exe server stop
+```
 
-PowerShell panes restart as fresh shells. Codex and Claude panes resume their
-provider-owned conversations by session ID, so Split does not copy or duplicate
-agent transcripts. Restored background projects are started lazily when first
-selected.
+Stop the runtime before replacing a development executable that Windows reports as in use. Runtime diagnostics are written to `%LOCALAPPDATA%\Split\runtime.log`.
+
+Legacy `split hook ...` invocations exit successfully as harmless no-ops, so an old provider configuration will not break startup. Provider hooks are no longer needed. To remove only the Split-owned handlers while preserving every unrelated Codex and Claude setting, run:
+
+```powershell
+.\split.next.exe hooks uninstall
+```
+
+## Persistence model
+
+Split stores durable workspace metadata in `%LOCALAPPDATA%\Split\state.db` using SQLite in WAL mode. It remembers:
+
+- project names, order, roots, and selected project;
+- sidebar visibility and focused pane;
+- every pane's working directory;
+- the full split tree and ratios.
+
+The background runtime owns the live ConPTY handles, terminal emulators, and child processes. Detaching and reconnecting therefore returns to the exact live terminal, including a Codex or Claude session launched by typing its command in PowerShell.
+
+An explicit `server stop`, process crash, sign-out, or reboot ends those live processes. On the next launch, Split restores the durable layout as fresh PowerShell terminals in their saved working directories. Provider transcripts remain provider-owned; use the CLI's normal resume workflow inside the appropriate pane when recovering after a full runtime stop.
 
 ## Controls
 
@@ -54,62 +65,36 @@ Split starts in navigation mode.
 | Key | Action |
 | --- | --- |
 | `h/j/k/l` or arrows | Move between panes |
-| `Tab` | Move focus between panes and sidebar |
+| `Tab` | Move focus between panes and the project sidebar |
 | `Enter` | Enter the focused terminal |
 | Mouse click | Focus a terminal and immediately enter input mode |
-| Right-click pane | Open the pane action menu |
-| `q` | Quit while in navigation mode |
+| Right-click pane | Open the mouse pane-action menu |
+| `[` / `]` | Previous or next project |
+| `q` or `Ctrl+C` | Detach the UI while in navigation mode |
 | `Ctrl+B` | Open the one-shot command prefix |
 
-The right-click pane menu provides mouse access to split-right, split-below,
-and new-project launchers for PowerShell, Codex, and Claude Code. It also supports
-directional pane movement, balancing, and closing. Hover selects a row; click
-a row to activate it, or press `Esc` to close the menu.
+The right-click menu directly creates a PowerShell split to the right or below, creates a new project, moves the focused pane, balances the layout, or closes the pane. Hover selects a row and left-click activates it.
 
 Prefix commands:
 
 | Key | Action |
 | --- | --- |
-| `v` or `%` | Split right with PowerShell |
-| `s` or `"` | Split down with PowerShell |
-| `a` | Open the process launcher |
-| `c` | Create a PowerShell project workspace |
+| `v` or `%` | Split right with a PowerShell terminal |
+| `s` or `"` | Split down with a PowerShell terminal |
+| `c` | Create a new single-terminal project |
 | `x` | Close the active pane or project |
 | `h/j/k/l` or arrows | Move the active pane in that direction |
 | `=` or `e` | Balance all panes in the active project |
 | `[` / `]` | Previous or next project |
-| `n` | Enter navigation mode |
+| `n` | Return to navigation mode |
 | `w` | Toggle the sidebar |
 | `b` | Send a literal `Ctrl+B` to the terminal |
-| `q` | Quit Split |
+| `q` | Detach the UI |
 
-Launcher controls:
-
-| Key | Action |
-| --- | --- |
-| `j/k` or arrows | Select PowerShell, Codex, or Claude Code |
-| `Enter` or `v` | Open the selection in a right-hand split |
-| `s` | Open the selection in a lower split |
-| `t` | Open the selection in a new project |
-| `Esc` or `q` | Close the launcher |
-
-Launch profiles are discovered from `PATH` at startup and inherit the project
-root as their working directory. Unavailable tools remain visible and are marked
-`not found` rather than disappearing from the interface. The sidebar keeps this
-variable launcher list out of the permanent layout; use `Ctrl+B`, then `a`, or
-the right-click pane menu when you want to launch a process. New projects created
-from the sidebar start as independent, single-pane PowerShell workspaces in the current root.
-
-New splits and layouts left after closing a pane are balanced automatically. If
-an agent pane becomes too narrow or short for its full-screen TUI, Split shows a
-clean recovery message instead of partially rendered terminal fragments; resize,
-balance, close a pane, or reopen the agent in a new project to restore its view.
+New projects and splits always start as PowerShell terminals at the current project root. Once focused, they accept arbitrary terminal programs exactly as Windows Terminal does.
 
 ## Architecture
 
-The Bubble Tea model owns project workspaces, focus, keyboard modes, and binary
-split trees. SQLite state and provider-session bindings are isolated behind
-`internal/state`; PTY sessions remain behind `internal/terminal`. Pane rendering
-does not depend on either persistence or process-management details. This leaves
-room for future native pane types such as a structured Codex app-server client.
+The hidden runtime owns the real `app.Model`, SQLite store, terminal emulators, ConPTY handles, and child processes. The visible Bubble Tea client only forwards resize, key, paste, and mouse messages and renders versioned frames received over the local named pipe. Disconnecting a client resets transient menus and focus state but does not close a terminal. An explicit stop persists the model, closes every ConPTY, and exits the runtime before acknowledging the command.
 
+This terminal-first boundary keeps Split provider-agnostic while leaving room for future structured integrations, such as a native Codex app-server pane, without making ordinary terminal workflows depend on them.

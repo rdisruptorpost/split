@@ -3,13 +3,12 @@ package app
 import (
 	"path/filepath"
 	"reflect"
-	"slices"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 
 	"split/internal/layout"
-	"split/internal/terminal"
+	"split/internal/state"
 )
 
 func TestPersistentModelRestoresProjectOrderNamesAndPaneLayouts(t *testing.T) {
@@ -96,44 +95,29 @@ func TestRestoredInactiveProjectStartsLazilyWhenSelected(t *testing.T) {
 	}
 }
 
-func TestAgentCommandsUseStableSessionHandles(t *testing.T) {
-	model := newModel(t.TempDir())
-	model.launchOptions = []launchOption{
-		{profile: profileCodex, title: "Codex", command: terminal.Command{Name: "codex"}, available: true},
-		{profile: profileClaude, title: "Claude Code", command: terminal.Command{Name: "claude"}, available: true},
+func TestLegacyAgentPanesRestoreAsPlainTerminals(t *testing.T) {
+	root := t.TempDir()
+	model := newModel(root)
+	snapshot := state.Snapshot{
+		ActiveProjectID: "tab-1", SidebarVisible: true, NextProjectNumber: 2,
+		Projects: []state.Project{{
+			ID: "tab-1", Name: "legacy", RootPath: root, ActivePaneID: "pane-1",
+			LayoutJSON: []byte(`{"pane_id":"pane-1"}`),
+			Panes: []state.Pane{{
+				ID: "pane-1", Title: "Codex", WorkingDirectory: root,
+			}},
+		}},
 	}
-
-	codex := &pane{id: "pane-codex", profile: profileCodex, cwd: model.root, providerSessionID: "thr_123", resumeSession: true}
-	command, err := model.commandForPane(codex)
-	if err != nil {
+	if err := model.restoreSnapshot(snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(command.Args, []string{"resume", "thr_123"}) {
-		t.Fatalf("unexpected Codex resume args: %#v", command.Args)
-	}
-	if command.Env["SPLIT_PANE_ID"] != codex.id || command.Env["SPLIT_PROVIDER"] != "codex" {
-		t.Fatalf("Codex hook metadata is incomplete: %#v", command.Env)
-	}
+	defer model.Close()
 
-	claudeNew := &pane{id: "pane-claude-new", profile: profileClaude, cwd: model.root, providerSessionID: "uuid-new"}
-	command, err = model.commandForPane(claudeNew)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(command.Args, []string{"--session-id", "uuid-new"}) {
-		t.Fatalf("unexpected new Claude session args: %#v", command.Args)
-	}
-
-	claudeRestored := &pane{id: "pane-claude-old", profile: profileClaude, cwd: model.root, providerSessionID: "uuid-old", resumeSession: true}
-	command, err = model.commandForPane(claudeRestored)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(command.Args, []string{"--resume", "uuid-old"}) {
-		t.Fatalf("unexpected Claude resume args: %#v", command.Args)
+	item := model.activePane()
+	if item == nil || item.title != "PowerShell" || item.cwd != root {
+		t.Fatalf("legacy agent pane was not normalized: %#v", item)
 	}
 }
-
 func TestLayoutPersistenceRejectsMalformedTrees(t *testing.T) {
 	if _, err := decodeLayout([]byte(`{"axis":"columns","first":{"pane_id":"one"}}`)); err == nil {
 		t.Fatal("split with a missing child should be rejected")

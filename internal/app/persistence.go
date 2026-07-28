@@ -1,8 +1,6 @@
 package app
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -95,11 +93,9 @@ func (m *Model) stateSnapshot() (state.Snapshot, error) {
 				return state.Snapshot{}, fmt.Errorf("project %s references missing pane %s", project.id, paneID)
 			}
 			savedProject.Panes = append(savedProject.Panes, state.Pane{
-				ID:                item.id,
-				Profile:           profileStorageName(item.profile),
-				Title:             item.title,
-				WorkingDirectory:  item.cwd,
-				ProviderSessionID: item.providerSessionID,
+				ID:               item.id,
+				Title:            "PowerShell",
+				WorkingDirectory: item.cwd,
 			})
 		}
 		snapshot.Projects = append(snapshot.Projects, savedProject)
@@ -120,22 +116,15 @@ func (m *Model) restoreSnapshot(snapshot state.Snapshot) error {
 		}
 		projectPaneIDs := make(map[string]struct{}, len(savedProject.Panes))
 		for _, savedPane := range savedProject.Panes {
-			profile, err := parseStoredProfile(savedPane.Profile)
-			if err != nil {
-				return fmt.Errorf("project %s pane %s: %w", savedProject.Name, savedPane.ID, err)
-			}
 			cwd := savedPane.WorkingDirectory
 			if cwd == "" {
 				cwd = savedProject.RootPath
 			}
 			item := &pane{
-				id:                savedPane.ID,
-				title:             savedPane.Title,
-				kind:              paneTerminal,
-				profile:           profile,
-				cwd:               cwd,
-				providerSessionID: savedPane.ProviderSessionID,
-				resumeSession:     savedPane.ProviderSessionID != "",
+				id:    savedPane.ID,
+				title: "PowerShell",
+				kind:  paneTerminal,
+				cwd:   cwd,
 			}
 			m.panes[item.id] = item
 			projectPaneIDs[item.id] = struct{}{}
@@ -266,48 +255,4 @@ func layoutFromState(saved *persistedLayout) (*layout.Node, error) {
 		ratio = 0.5
 	}
 	return &layout.Node{Axis: axis, Ratio: ratio, First: first, Second: second}, nil
-}
-
-func profileStorageName(profile paneProfile) string {
-	switch profile {
-	case profileCodex:
-		return "codex"
-	case profileClaude:
-		return "claude"
-	default:
-		return "powershell"
-	}
-}
-
-func parseStoredProfile(value string) (paneProfile, error) {
-	switch value {
-	case "powershell":
-		return profileShell, nil
-	case "codex":
-		return profileCodex, nil
-	case "claude":
-		return profileClaude, nil
-	default:
-		return profileShell, fmt.Errorf("unknown profile %q", value)
-	}
-}
-
-func newSessionUUID() (string, error) {
-	var value [16]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		return "", err
-	}
-	value[6] = (value[6] & 0x0f) | 0x40
-	value[8] = (value[8] & 0x3f) | 0x80
-	encoded := make([]byte, 36)
-	hex.Encode(encoded[0:8], value[0:4])
-	encoded[8] = '-'
-	hex.Encode(encoded[9:13], value[4:6])
-	encoded[13] = '-'
-	hex.Encode(encoded[14:18], value[6:8])
-	encoded[18] = '-'
-	hex.Encode(encoded[19:23], value[8:10])
-	encoded[23] = '-'
-	hex.Encode(encoded[24:36], value[10:16])
-	return string(encoded), nil
 }

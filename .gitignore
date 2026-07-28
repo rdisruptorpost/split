@@ -1,4 +1,5 @@
-/split.exe
+/*.exe
+/*.exe~
 /dist/
 /*.log
 

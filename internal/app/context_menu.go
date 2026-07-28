@@ -11,34 +11,22 @@ import (
 	"split/internal/terminal"
 )
 
-type paneContextMenuKind uint8
-
-const (
-	paneMenuRoot paneContextMenuKind = iota
-	paneMenuSplitRight
-	paneMenuSplitBelow
-	paneMenuNewTab
-)
-
 type paneContextMenuAction uint8
 
 const (
 	paneMenuNoop paneContextMenuAction = iota
-	paneMenuOpenSplitRight
-	paneMenuOpenSplitBelow
-	paneMenuOpenNewTab
-	paneMenuLaunchProfile
+	paneMenuSplitRight
+	paneMenuSplitBelow
+	paneMenuNewProject
 	paneMenuMove
 	paneMenuBalance
 	paneMenuClose
-	paneMenuBack
 )
 
 type paneContextMenuItem struct {
 	label     string
 	hint      string
 	action    paneContextMenuAction
-	profile   paneProfile
 	direction layout.Direction
 	enabled   bool
 	separator bool
@@ -48,7 +36,6 @@ type paneContextMenuState struct {
 	open         bool
 	x            int
 	y            int
-	kind         paneContextMenuKind
 	selected     int
 	targetPane   string
 	previousMode mode
@@ -71,7 +58,6 @@ func (m *Model) openPaneContextMenu(x, y int, paneID string) {
 		open:         true,
 		x:            x,
 		y:            y,
-		kind:         paneMenuRoot,
 		targetPane:   paneID,
 		previousMode: m.mode,
 	}
@@ -105,24 +91,6 @@ func (m *Model) closePaneContextMenu(restoreMode bool) {
 }
 
 func (m *Model) paneContextMenuItems() []paneContextMenuItem {
-	if m.contextMenu.kind != paneMenuRoot {
-		items := make([]paneContextMenuItem, 0, len(m.launchOptions)+2)
-		for _, option := range m.launchOptions {
-			items = append(items, paneContextMenuItem{
-				label:   option.title,
-				hint:    availabilityHint(option.available),
-				action:  paneMenuLaunchProfile,
-				profile: option.profile,
-				enabled: option.available,
-			})
-		}
-		items = append(items,
-			paneContextMenuItem{separator: true},
-			paneContextMenuItem{label: "Back", hint: "←", action: paneMenuBack, enabled: true},
-		)
-		return items
-	}
-
 	active := m.active()
 	paneCount := 0
 	canClose := false
@@ -131,25 +99,18 @@ func (m *Model) paneContextMenuItems() []paneContextMenuItem {
 		canClose = paneCount > 1 || len(m.tabs) > 1
 	}
 	return []paneContextMenuItem{
-		{label: "Split right…", hint: "›", action: paneMenuOpenSplitRight, enabled: active != nil},
-		{label: "Split below…", hint: "›", action: paneMenuOpenSplitBelow, enabled: active != nil},
-		{label: "Open in new project…", hint: "›", action: paneMenuOpenNewTab, enabled: true},
+		{label: "Split right", hint: "\u2192", action: paneMenuSplitRight, enabled: active != nil},
+		{label: "Split below", hint: "\u2193", action: paneMenuSplitBelow, enabled: active != nil},
+		{label: "Open in new project", hint: "+", action: paneMenuNewProject, enabled: true},
 		{separator: true},
-		{label: "Move left", hint: "←", action: paneMenuMove, direction: layout.Left, enabled: m.canMoveActivePane(layout.Left)},
-		{label: "Move right", hint: "→", action: paneMenuMove, direction: layout.Right, enabled: m.canMoveActivePane(layout.Right)},
-		{label: "Move up", hint: "↑", action: paneMenuMove, direction: layout.Up, enabled: m.canMoveActivePane(layout.Up)},
-		{label: "Move down", hint: "↓", action: paneMenuMove, direction: layout.Down, enabled: m.canMoveActivePane(layout.Down)},
+		{label: "Move left", hint: "\u2190", action: paneMenuMove, direction: layout.Left, enabled: m.canMoveActivePane(layout.Left)},
+		{label: "Move right", hint: "\u2192", action: paneMenuMove, direction: layout.Right, enabled: m.canMoveActivePane(layout.Right)},
+		{label: "Move up", hint: "\u2191", action: paneMenuMove, direction: layout.Up, enabled: m.canMoveActivePane(layout.Up)},
+		{label: "Move down", hint: "\u2193", action: paneMenuMove, direction: layout.Down, enabled: m.canMoveActivePane(layout.Down)},
 		{separator: true},
 		{label: "Balance panes", hint: "=", action: paneMenuBalance, enabled: paneCount > 1},
-		{label: "Close pane", hint: "×", action: paneMenuClose, enabled: canClose},
+		{label: "Close pane", hint: "x", action: paneMenuClose, enabled: canClose},
 	}
-}
-
-func availabilityHint(available bool) string {
-	if available {
-		return "ready"
-	}
-	return "missing"
 }
 
 func (m *Model) canMoveActivePane(direction layout.Direction) bool {
@@ -192,46 +153,26 @@ func (m *Model) activatePaneContextMenuItem(index int) {
 	}
 	item := items[index]
 	m.contextMenu.selected = index
+	m.closePaneContextMenu(false)
 	switch item.action {
-	case paneMenuOpenSplitRight:
-		m.openPaneContextSubmenu(paneMenuSplitRight)
-	case paneMenuOpenSplitBelow:
-		m.openPaneContextSubmenu(paneMenuSplitBelow)
-	case paneMenuOpenNewTab:
-		m.openPaneContextSubmenu(paneMenuNewTab)
-	case paneMenuLaunchProfile:
-		kind := m.contextMenu.kind
-		m.closePaneContextMenu(false)
-		switch kind {
-		case paneMenuSplitBelow:
-			m.splitActiveProfile(item.profile, layout.Rows)
-		case paneMenuNewTab:
-			m.newTabProfile(item.profile)
-		default:
-			m.splitActiveProfile(item.profile, layout.Columns)
-		}
+	case paneMenuSplitRight:
+		m.splitActive(layout.Columns)
+	case paneMenuSplitBelow:
+		m.splitActive(layout.Rows)
+	case paneMenuNewProject:
+		m.newProject()
 	case paneMenuMove:
-		m.closePaneContextMenu(false)
 		m.swapActivePane(item.direction)
 	case paneMenuBalance:
-		m.closePaneContextMenu(false)
 		m.balanceActiveLayout()
 	case paneMenuClose:
-		m.closePaneContextMenu(false)
 		m.closeActivePane()
-	case paneMenuBack:
-		m.openPaneContextSubmenu(paneMenuRoot)
 	}
-}
-
-func (m *Model) openPaneContextSubmenu(kind paneContextMenuKind) {
-	m.contextMenu.kind = kind
-	m.contextMenu.selected = firstContextMenuSelection(m.paneContextMenuItems())
 }
 
 func (m *Model) handlePaneContextMenuKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch message.String() {
-	case "esc", "escape", "q":
+	case "esc", "escape", "q", "left", "h":
 		m.closePaneContextMenu(true)
 	case "up", "k":
 		m.movePaneContextMenuSelection(-1)
@@ -239,12 +180,6 @@ func (m *Model) handlePaneContextMenuKey(message tea.KeyPressMsg) (tea.Model, te
 		m.movePaneContextMenuSelection(1)
 	case "enter", "right", "l":
 		m.activatePaneContextMenuItem(m.contextMenu.selected)
-	case "left", "h":
-		if m.contextMenu.kind == paneMenuRoot {
-			m.closePaneContextMenu(true)
-		} else {
-			m.openPaneContextSubmenu(paneMenuRoot)
-		}
 	}
 	return m, nil
 }
@@ -299,33 +234,20 @@ func (m *Model) paneContextMenuGeometry() paneContextMenuGeometry {
 	return paneContextMenuGeometry{x: x, y: y, width: width, height: height}
 }
 
-func (m *Model) paneContextMenuTitle() string {
-	switch m.contextMenu.kind {
-	case paneMenuSplitRight:
-		return "Split right"
-	case paneMenuSplitBelow:
-		return "Split below"
-	case paneMenuNewTab:
-		return "New project"
-	default:
-		return "Pane"
-	}
-}
-
 func (m *Model) renderPaneContextMenuOverlay(base string) string {
 	geometry := m.paneContextMenuGeometry()
 	items := m.paneContextMenuItems()
 	innerWidth := max(0, geometry.width-2)
 	border := lipgloss.NewStyle().Foreground(palette.accent)
-	title := " " + m.paneContextMenuTitle() + " "
+	title := " Pane "
 	title = ansi.Truncate(title, innerWidth, "")
-	top := border.Render("┌" + title + strings.Repeat("─", max(0, innerWidth-ansi.StringWidth(title))) + "┐")
+	top := border.Render("\u250c" + title + strings.Repeat("\u2500", max(0, innerWidth-ansi.StringWidth(title))) + "\u2510")
 
 	lines := make([]string, 0, geometry.height)
 	lines = append(lines, top)
 	for index, item := range items {
 		if item.separator {
-			lines = append(lines, border.Render("├"+strings.Repeat("─", innerWidth)+"┤"))
+			lines = append(lines, border.Render("\u251c"+strings.Repeat("\u2500", innerWidth)+"\u2524"))
 			continue
 		}
 		label := " " + item.label
@@ -339,9 +261,9 @@ func (m *Model) renderPaneContextMenuOverlay(base string) string {
 		default:
 			row = styles.text.Render(row)
 		}
-		lines = append(lines, border.Render("│")+row+border.Render("│"))
+		lines = append(lines, border.Render("\u2502")+row+border.Render("\u2502"))
 	}
-	lines = append(lines, border.Render("└"+strings.Repeat("─", innerWidth)+"┘"))
+	lines = append(lines, border.Render("\u2514"+strings.Repeat("\u2500", innerWidth)+"\u2518"))
 	menu := fitBlock(strings.Join(lines, "\n"), geometry.width, geometry.height)
 
 	composed := lipgloss.NewCompositor(

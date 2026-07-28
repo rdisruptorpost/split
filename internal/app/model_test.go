@@ -3,11 +3,13 @@ package app
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"split/internal/layout"
+	"split/internal/terminal"
 )
 
 func TestInitialViewFillsWindow(t *testing.T) {
@@ -28,8 +30,12 @@ func TestInitialViewFillsWindow(t *testing.T) {
 			t.Fatalf("row %d: expected width %d, got %d", row, width, got)
 		}
 	}
-	if !strings.Contains(view.Content, "SPLIT") {
-		t.Fatal("view does not contain the Split sidebar")
+	plainView := ansi.Strip(view.Content)
+	if !strings.Contains(plainView, sidebarBrandFrame[1]) {
+		t.Fatal("view does not contain the Split graphic")
+	}
+	if strings.Contains(plainView, "SPLIT ·") {
+		t.Fatal("legacy text branding should be replaced by the graphic")
 	}
 	if !strings.Contains(view.Content, "PROJECTS") || !strings.Contains(view.Content, "+ New project") {
 		t.Fatal("sidebar should expose the project switcher and new-project control")
@@ -40,7 +46,7 @@ func TestInitialViewFillsWindow(t *testing.T) {
 	if strings.Contains(view.Content, "Command center") {
 		t.Fatal("projects should start without the command-center pane")
 	}
-	plainLines := strings.Split(ansi.Strip(view.Content), "\n")
+	plainLines := strings.Split(plainView, "\n")
 	if !strings.Contains(plainLines[0], "PowerShell") {
 		t.Fatal("PowerShell pane should begin on the first row without a top tab strip")
 	}
@@ -73,7 +79,7 @@ func TestSidebarCreatesAndSwitchesProjectsWithMouse(t *testing.T) {
 	if got := len(model.tabs[1].root.Leaves()); got != 1 {
 		t.Fatalf("new project should start as one full-size PowerShell pane, got %d panes", got)
 	}
-	if item := model.activePane(); item == nil || item.kind != paneTerminal || item.profile != profileShell {
+	if item := model.activePane(); item == nil || item.kind != paneTerminal || item.title != "PowerShell" {
 		t.Fatal("new project should focus its PowerShell pane")
 	}
 
@@ -104,49 +110,51 @@ func TestTerminalModeUsesEmulatedCursor(t *testing.T) {
 	}
 }
 
-func TestLauncherRendersAndOpensSelectedProfile(t *testing.T) {
+func TestModelForwardsPasteAndEnterToPowerShell(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+	_, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	_, _ = model.Update(tea.PasteMsg{Content: "echo __SPLIT_MODEL_INPUT_OK__"})
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+
+	deadline := time.After(10 * time.Second)
+	for {
+		if strings.Contains(ansi.Strip(model.View().Content), "__SPLIT_MODEL_INPUT_OK__") {
+			return
+		}
+		select {
+		case event := <-model.TerminalEvents():
+			model.ApplyTerminalEvents([]terminal.Event{event})
+		case <-deadline:
+			t.Fatalf("PowerShell did not receive model input; mode=%v content=%q", model.mode, ansi.Strip(model.View().Content))
+		}
+	}
+}
+func TestPrefixCreatesPlainTerminalPaneAndQuitDetaches(t *testing.T) {
 	model := New(t.TempDir())
 	defer model.Close()
 
-	const width = 100
-	const height = 30
-	_, _ = model.Update(tea.WindowSizeMsg{Width: width, Height: height})
-	model.openLauncher()
-	view := model.View()
-
-	if !strings.Contains(view.Content, "Launch a pane") {
-		t.Fatal("launcher modal is not visible")
-	}
-	if !strings.Contains(view.Content, "Codex") || !strings.Contains(view.Content, "Claude Code") {
-		t.Fatal("launcher should list the supported coding agents")
-	}
-	if view.Cursor != nil {
-		t.Fatal("launcher should hide the terminal cursor")
-	}
-	lines := strings.Split(view.Content, "\n")
-	if len(lines) != height {
-		t.Fatalf("launcher: expected %d rendered rows, got %d", height, len(lines))
-	}
-	for row, line := range lines {
-		if got := ansi.StringWidth(line); got != width {
-			t.Fatalf("launcher row %d: expected width %d, got %d", row, width, got)
-		}
-	}
-
+	_, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	before := len(model.active().root.Leaves())
-	model.launcherSelected = 0
-	model.launchSelected(layout.Columns, false)
-	if model.launcherOpen {
-		t.Fatal("launcher should close after a successful launch")
-	}
+	model.mode = modePrefix
+	_, _ = model.handlePrefixKey(tea.KeyPressMsg(tea.Key{Code: 'v'}))
 	if got := len(model.active().root.Leaves()); got != before+1 {
-		t.Fatalf("expected a new pane, got %d panes", got)
+		t.Fatalf("expected a new terminal pane, got %d panes", got)
 	}
-	if active := model.activePane(); active == nil || active.profile != profileShell {
-		t.Fatal("selected shell profile was not opened")
+	if active := model.activePane(); active == nil || active.title != "PowerShell" {
+		t.Fatal("splits should always create plain PowerShell terminals")
+	}
+
+	model.mode = modeNavigate
+	_, _ = model.handleNavigationKey(tea.KeyPressMsg(tea.Key{Code: 'q'}))
+	if !model.TakeDetachRequest() {
+		t.Fatal("q should request client detachment")
+	}
+	if model.TakeDetachRequest() {
+		t.Fatal("detach requests should be consumed once")
 	}
 }
-
 func TestSplitsBalanceAndActivePaneCanMove(t *testing.T) {
 	model := New(t.TempDir())
 	defer model.Close()
@@ -178,24 +186,25 @@ func TestSplitsBalanceAndActivePaneCanMove(t *testing.T) {
 	}
 }
 
-func TestThinAgentPaneUsesSafePlaceholder(t *testing.T) {
+func TestThinTerminalPaneStaysWithinItsFrame(t *testing.T) {
 	model := New(t.TempDir())
 	defer model.Close()
 
-	_, _ = model.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	const width = 80
+	const height = 30
+	_, _ = model.Update(tea.WindowSizeMsg{Width: width, Height: height})
 	model.splitActive(layout.Columns)
-	model.activePane().profile = profileCodex
-	model.mode = modeTerminal
 	view := model.View()
 
-	if !strings.Contains(view.Content, "Agent pane too narrow") {
-		t.Fatal("thin agent pane should render its safe placeholder")
+	if strings.Contains(view.Content, "Agent pane too narrow") {
+		t.Fatal("plain terminal panes should render their emulator at every size")
 	}
-	if view.Cursor != nil {
-		t.Fatal("thin agent pane should hide its emulated cursor")
+	for row, line := range strings.Split(view.Content, "\n") {
+		if got := ansi.StringWidth(line); got != width {
+			t.Fatalf("row %d escaped the viewport: got width %d", row, got)
+		}
 	}
 }
-
 func TestPaneFramePreservesExactContentRows(t *testing.T) {
 	const width = 14
 	const height = 8
@@ -292,7 +301,7 @@ func TestPaneContextMenuEnablesHoverTracking(t *testing.T) {
 	}
 }
 
-func TestPaneContextMenuSupportsMouseAgentLaunch(t *testing.T) {
+func TestPaneContextMenuCreatesPlainTerminalWithMouse(t *testing.T) {
 	model := New(t.TempDir())
 	defer model.Close()
 
@@ -303,17 +312,11 @@ func TestPaneContextMenuSupportsMouseAgentLaunch(t *testing.T) {
 	terminalRect := active.root.Rects(model.workspaceRect())[active.activePane]
 
 	model.handleMouseClick(tea.Mouse{
-		X:      terminalRect.X + terminalRect.Width/2,
-		Y:      terminalRect.Y + terminalRect.Height/2,
+		X: terminalRect.X + terminalRect.Width/2, Y: terminalRect.Y + terminalRect.Height/2,
 		Button: tea.MouseLeft,
 	})
-	if model.mode != modeTerminal {
-		t.Fatal("terminal should be in input mode before opening its context menu")
-	}
-
 	model.handleMouseClick(tea.Mouse{
-		X:      terminalRect.X + terminalRect.Width - 2,
-		Y:      terminalRect.Y + terminalRect.Height - 2,
+		X: terminalRect.X + terminalRect.Width - 2, Y: terminalRect.Y + terminalRect.Height - 2,
 		Button: tea.MouseRight,
 	})
 	if !model.contextMenu.open || model.mode != modeNavigate {
@@ -328,7 +331,7 @@ func TestPaneContextMenuSupportsMouseAgentLaunch(t *testing.T) {
 		t.Fatal("context menu should hide the terminal cursor")
 	}
 	if !strings.Contains(view.Content, "Split right") || !strings.Contains(view.Content, "Close pane") {
-		t.Fatal("root context menu is missing pane actions")
+		t.Fatal("context menu is missing pane actions")
 	}
 	for row, line := range strings.Split(view.Content, "\n") {
 		if got := ansi.StringWidth(line); got != width {
@@ -341,36 +344,20 @@ func TestPaneContextMenuSupportsMouseAgentLaunch(t *testing.T) {
 		t.Fatal("hovering a menu row should select it")
 	}
 
-	model.handlePaneContextMenuClick(tea.Mouse{
-		X:      geometry.x + 2,
-		Y:      geometry.y + 1,
-		Button: tea.MouseLeft,
-	})
-	if model.contextMenu.kind != paneMenuSplitRight {
-		t.Fatal("clicking Split right should open the agent profile submenu")
-	}
-	if !strings.Contains(model.View().Content, "Claude Code") {
-		t.Fatal("agent submenu should include Claude Code")
-	}
-
 	before := len(active.root.Leaves())
-	geometry = model.paneContextMenuGeometry()
 	model.handlePaneContextMenuClick(tea.Mouse{
-		X:      geometry.x + 2,
-		Y:      geometry.y + 1,
-		Button: tea.MouseLeft,
+		X: geometry.x + 2, Y: geometry.y + 1, Button: tea.MouseLeft,
 	})
 	if model.contextMenu.open {
-		t.Fatal("context menu should close after launching a profile")
+		t.Fatal("context menu should close after creating a split")
 	}
 	if got := len(active.root.Leaves()); got != before+1 {
-		t.Fatalf("expected mouse launch to create a pane, got %d panes", got)
+		t.Fatalf("expected mouse action to create a pane, got %d panes", got)
 	}
-	if item := model.activePane(); item == nil || item.profile != profileShell {
-		t.Fatal("mouse launch should create the selected PowerShell profile")
+	if item := model.activePane(); item == nil || item.title != "PowerShell" {
+		t.Fatal("mouse splits should create plain PowerShell terminals")
 	}
 }
-
 func TestPaneContextMenuEscapeRestoresTerminalMode(t *testing.T) {
 	model := New(t.TempDir())
 	defer model.Close()

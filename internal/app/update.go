@@ -20,7 +20,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForTerminalEvents(m.events)
 
 	case tea.PasteMsg:
-		if m.mode == modeTerminal && !m.launcherOpen && !m.contextMenu.open {
+		if m.mode == modeTerminal && !m.contextMenu.open {
 			if item := m.activePane(); item != nil && item.session != nil {
 				item.session.Paste(message.Content)
 			}
@@ -30,7 +30,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseClickMsg:
 		if m.contextMenu.open {
 			m.handlePaneContextMenuClick(message.Mouse())
-		} else if !m.launcherOpen {
+		} else {
 			m.handleMouseClick(message.Mouse())
 		}
 		return m, nil
@@ -44,9 +44,6 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		if m.contextMenu.open {
 			return m.handlePaneContextMenuKey(message)
-		}
-		if m.launcherOpen {
-			return m.handleLauncherKey(message)
 		}
 		return m.handleKey(message)
 	}
@@ -78,6 +75,7 @@ func (m *Model) handleKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *Model) handleNavigationKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch message.String() {
 	case "ctrl+c", "q":
+		m.detachRequested = true
 		return m, tea.Quit
 	case "ctrl+b":
 		m.modeBeforePrefix = modeNavigate
@@ -153,8 +151,6 @@ func (m *Model) handlePrefixKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "n":
 		m.mode = modeNavigate
 		m.focus = focusPanes
-	case "a":
-		m.openLauncher()
 	case "c":
 		m.newTab()
 	case "%", "v":
@@ -188,28 +184,10 @@ func (m *Model) handlePrefixKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.resizeActivePanes()
 		m.persist()
 	case "q":
+		m.detachRequested = true
 		return m, tea.Quit
 	default:
 		m.mode = m.modeBeforePrefix
-	}
-	return m, nil
-}
-
-func (m *Model) handleLauncherKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch message.String() {
-	case "esc", "escape", "q":
-		m.launcherOpen = false
-		m.mode = modeNavigate
-	case "up", "k":
-		m.moveLauncher(-1)
-	case "down", "j":
-		m.moveLauncher(1)
-	case "enter", "v":
-		m.launchSelected(layout.Columns, false)
-	case "s":
-		m.launchSelected(layout.Rows, false)
-	case "t":
-		m.launchSelected(layout.Columns, true)
 	}
 	return m, nil
 }
