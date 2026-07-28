@@ -186,6 +186,7 @@ func (m *Model) handlePrefixKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.mode = modeNavigate
 		m.resizeActivePanes()
+		m.persist()
 	case "q":
 		return m, tea.Quit
 	default:
@@ -267,11 +268,13 @@ func (m *Model) handleMouseClick(mouse tea.Mouse) {
 			state, _ := item.session.State()
 			if state == terminal.Running {
 				m.mode = modeTerminal
+				m.persist()
 				return
 			}
 			m.notice = "This terminal is not running"
 		}
 		m.mode = modeNavigate
+		m.persist()
 		return
 	}
 }

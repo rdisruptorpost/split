@@ -45,6 +45,7 @@ type Command struct {
 	Name string
 	Args []string
 	Dir  string
+	Env  map[string]string
 }
 
 type CursorStyle = vt.CursorStyle
@@ -107,7 +108,7 @@ func Start(id string, command Command, width, height int, events chan<- Event) (
 
 	cmd := pseudoterm.Command(command.Name, command.Args...)
 	cmd.Dir = command.Dir
-	cmd.Env = terminalEnvironment(os.Environ())
+	cmd.Env = terminalEnvironment(os.Environ(), command.Env)
 
 	session := &Session{
 		id:           id,
@@ -343,14 +344,18 @@ func (s *Session) notify(event Event) {
 	}
 }
 
-func terminalEnvironment(environment []string) []string {
-	return setEnvironment(
+func terminalEnvironment(environment []string, overrides map[string]string) []string {
+	updated := setEnvironment(
 		setEnvironment(
 			setEnvironment(environment, "TERM", "xterm-256color"),
 			"COLORTERM", "truecolor",
 		),
 		"TERM_PROGRAM", "split",
 	)
+	for key, value := range overrides {
+		updated = setEnvironment(updated, key, value)
+	}
+	return updated
 }
 
 func setEnvironment(environment []string, key, value string) []string {

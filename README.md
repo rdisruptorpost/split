@@ -12,7 +12,8 @@ The current checkpoint is a Bubble Tea v2 workspace foundation with:
 - a neutral graphite theme with restrained warm-gray and state-color accents;
 - a launcher for PowerShell, Codex CLI, and Claude Code;
 - per-pane profile badges and live, exited, or failed process state;
-- clickable sidebar project rows, a `+ New project` control, and one-click terminal input focus.
+- clickable sidebar project rows, a `+ New project` control, and one-click terminal input focus;
+- SQLite-backed project, pane-layout, and agent-session restoration.
 
 ## Run
 
@@ -21,6 +22,30 @@ go run .
 ```
 
 The first build may download the Go 1.25 toolchain and module dependencies.
+
+For exact Codex and Claude session restoration, build Split and install its
+session-start hooks:
+
+```powershell
+go build -o split.exe .
+.\split.exe hooks install
+```
+
+The installer merges Split's hooks with existing provider configuration and
+creates a one-time `.split-backup` beside each changed file. Re-run it if the
+Split executable moves to a different path.
+
+## Persistence
+
+Split stores its state in `%LOCALAPPDATA%\Split\state.db`. It remembers project
+names and order, roots, the selected project and pane, sidebar visibility, pane
+profiles and working directories, and each project's complete split tree and
+ratios.
+
+PowerShell panes restart as fresh shells. Codex and Claude panes resume their
+provider-owned conversations by session ID, so Split does not copy or duplicate
+agent transcripts. Restored background projects are started lazily when first
+selected.
 
 ## Controls
 
@@ -82,8 +107,9 @@ balance, close a pane, or reopen the agent in a new project to restore its view.
 
 ## Architecture
 
-The Bubble Tea model owns project workspaces, focus, keyboard modes, and binary split trees.
-PTY sessions are isolated behind `internal/terminal`; pane rendering does not
-depend on process-management details. This leaves room for future native pane
-types such as a structured Codex app-server client.
+The Bubble Tea model owns project workspaces, focus, keyboard modes, and binary
+split trees. SQLite state and provider-session bindings are isolated behind
+`internal/state`; PTY sessions remain behind `internal/terminal`. Pane rendering
+does not depend on either persistence or process-management details. This leaves
+room for future native pane types such as a structured Codex app-server client.
 

@@ -79,6 +79,7 @@ func (m *Model) openPaneContextMenu(x, y int, paneID string) {
 	m.focus = focusPanes
 	m.mode = modeNavigate
 	m.notice = ""
+	m.persist()
 }
 
 func (m *Model) closePaneContextMenu(restoreMode bool) {

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -8,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"split/internal/layout"
+	"split/internal/state"
 	"split/internal/terminal"
 )
 
@@ -60,17 +62,22 @@ type launchOption struct {
 }
 
 type pane struct {
-	id      string
-	title   string
-	kind    paneKind
-	profile paneProfile
-	session *terminal.Session
-	err     error
+	id                string
+	title             string
+	kind              paneKind
+	profile           paneProfile
+	cwd               string
+	providerSessionID string
+	resumeSession     bool
+	started           bool
+	session           *terminal.Session
+	err               error
 }
 
 type tab struct {
 	id         string
 	title      string
+	rootPath   string
 	root       *layout.Node
 	activePane string
 }
@@ -99,6 +106,8 @@ type Model struct {
 	launcherOpen     bool
 	launcherSelected int
 	contextMenu      paneContextMenuState
+
+	store *state.Store
 }
 
 type terminalBatchMsg struct {
@@ -128,6 +137,12 @@ func discoverLaunchOptions(root string) []launchOption {
 }
 
 func New(root string) *Model {
+	model := newModel(root)
+	model.initializeDefaultProject()
+	return model
+}
+
+func newModel(root string) *Model {
 	model := &Model{
 		width:             defaultWidth,
 		height:            defaultHeight,
@@ -140,16 +155,21 @@ func New(root string) *Model {
 		nextProjectNumber: 2,
 	}
 	model.launchOptions = discoverLaunchOptions(root)
+	return model
+}
 
-	shell := model.newTerminalPane("PowerShell")
-	model.tabs = []*tab{{
-		id:         model.newID("tab"),
-		title:      model.projectName(),
+func (m *Model) initializeDefaultProject() {
+	shell := m.newTerminalPane("PowerShell")
+	m.tabs = []*tab{{
+		id:         m.newID("tab"),
+		title:      m.projectName(),
+		rootPath:   shell.cwd,
 		root:       layout.Leaf(shell.id),
 		activePane: shell.id,
 	}}
-	model.resizeActivePanes()
-	return model
+	m.activeTab = 0
+	m.sidebarCursor = 0
+	m.resizeActivePanes()
 }
 
 func (m *Model) Init() tea.Cmd {
@@ -157,10 +177,15 @@ func (m *Model) Init() tea.Cmd {
 }
 
 func (m *Model) Close() {
+	m.persist()
 	for _, item := range m.panes {
 		if item.session != nil {
 			item.session.Close()
 		}
+	}
+	if m.store != nil {
+		_ = m.store.Close()
+		m.store = nil
 	}
 }
 
@@ -180,7 +205,7 @@ func (m *Model) newOverviewPane() *pane {
 }
 
 func (m *Model) newTerminalPane(title string) *pane {
-	return m.newCommandPane(title, profileShell, terminal.DefaultShell(m.root))
+	return m.newPane(title, profileShell, "", false)
 }
 
 func (m *Model) newProfilePane(profile paneProfile) *pane {
@@ -192,29 +217,98 @@ func (m *Model) newProfilePane(profile paneProfile) *pane {
 			m.notice = option.title + " was not found on PATH"
 			return nil
 		}
-		return m.newCommandPane(option.title, option.profile, option.command)
+		sessionID := ""
+		if profile == profileClaude {
+			var err error
+			sessionID, err = newSessionUUID()
+			if err != nil {
+				m.notice = "Could not allocate a Claude session id: " + err.Error()
+				return nil
+			}
+		}
+		return m.newPane(option.title, option.profile, sessionID, false)
 	}
 	m.notice = "Unknown launch profile"
 	return nil
 }
 
-func (m *Model) newCommandPane(title string, profile paneProfile, command terminal.Command) *pane {
+func (m *Model) newPane(title string, profile paneProfile, providerSessionID string, resume bool) *pane {
 	item := &pane{
-		id:      m.newID("pane"),
-		title:   title,
-		kind:    paneTerminal,
-		profile: profile,
+		id:                m.newID("pane"),
+		title:             title,
+		kind:              paneTerminal,
+		profile:           profile,
+		cwd:               m.activeProjectRoot(),
+		providerSessionID: providerSessionID,
+		resumeSession:     resume,
 	}
+	m.panes[item.id] = item
+	m.startPane(item)
+	return item
+}
 
+func (m *Model) startPane(item *pane) {
+	if item == nil || item.started {
+		return
+	}
+	item.started = true
+	command, err := m.commandForPane(item)
+	if err != nil {
+		item.err = err
+		m.notice = item.title + " unavailable: " + err.Error()
+		return
+	}
+	if m.store != nil && (item.profile == profileCodex || item.profile == profileClaude) {
+		provider := profileStorageName(item.profile)
+		if err := state.RegisterSessionLaunch(m.store.Path(), item.id, provider, item.cwd); err != nil {
+			_ = state.AppendHookDiagnostic(m.store.Path(), provider, item.id, fmt.Errorf("register agent launch: %w", err))
+		}
+	}
 	session, err := terminal.Start(item.id, command, 80, 24, m.events)
 	if err != nil {
 		item.err = err
-		m.notice = title + " unavailable: " + err.Error()
-	} else {
-		item.session = session
+		m.notice = item.title + " unavailable: " + err.Error()
+		return
 	}
-	m.panes[item.id] = item
-	return item
+	item.session = session
+}
+
+func (m *Model) commandForPane(item *pane) (terminal.Command, error) {
+	if item.profile == profileShell {
+		return terminal.DefaultShell(item.cwd), nil
+	}
+	for _, option := range m.launchOptions {
+		if option.profile != item.profile {
+			continue
+		}
+		if !option.available {
+			return terminal.Command{}, fmt.Errorf("%s was not found on PATH", option.title)
+		}
+		command := option.command
+		command.Args = append([]string(nil), command.Args...)
+		command.Dir = item.cwd
+		command.Env = map[string]string{
+			"SPLIT_PANE_ID":  item.id,
+			"SPLIT_PROVIDER": profileStorageName(item.profile),
+		}
+		if m.store != nil {
+			command.Env["SPLIT_STATE_DB"] = m.store.Path()
+		}
+		if item.providerSessionID != "" {
+			switch item.profile {
+			case profileCodex:
+				command.Args = append(command.Args, "resume", item.providerSessionID)
+			case profileClaude:
+				flag := "--session-id"
+				if item.resumeSession {
+					flag = "--resume"
+				}
+				command.Args = append(command.Args, flag, item.providerSessionID)
+			}
+		}
+		return command, nil
+	}
+	return terminal.Command{}, errors.New("unknown launch profile")
 }
 
 func (m *Model) active() *tab {
@@ -231,6 +325,13 @@ func (m *Model) activePane() *pane {
 		return nil
 	}
 	return m.panes[active.activePane]
+}
+
+func (m *Model) activeProjectRoot() string {
+	if active := m.active(); active != nil && active.rootPath != "" {
+		return active.rootPath
+	}
+	return m.root
 }
 
 func (m *Model) effectiveSidebarWidth() int {
@@ -291,6 +392,7 @@ func (m *Model) splitActiveProfile(profile paneProfile, axis layout.Axis) {
 	m.focus = focusPanes
 	m.notice = "Created and balanced a new " + item.title + " pane"
 	m.resizeActivePanes()
+	m.persist()
 }
 
 func (m *Model) newProject() {
@@ -299,6 +401,7 @@ func (m *Model) newProject() {
 	m.nextProjectNumber++
 	m.appendTab(shell, title)
 	m.notice = "Created a new PowerShell project"
+	m.persist()
 }
 
 func (m *Model) newTab() {
@@ -312,12 +415,14 @@ func (m *Model) newTabProfile(profile paneProfile) {
 	}
 	m.appendTab(item, profileTabTitle(profile, len(m.tabs)+1))
 	m.notice = "Created a new " + item.title + " project"
+	m.persist()
 }
 
 func (m *Model) appendTab(item *pane, title string) {
 	m.tabs = append(m.tabs, &tab{
 		id:         m.newID("tab"),
 		title:      title,
+		rootPath:   item.cwd,
 		root:       layout.Leaf(item.id),
 		activePane: item.id,
 	})
@@ -398,7 +503,9 @@ func (m *Model) closeActivePane() {
 		m.activeTab = max(0, min(m.activeTab, len(m.tabs)-1))
 		m.sidebarCursor = m.activeTab
 		m.mode = modeNavigate
+		m.ensureProjectStarted(m.active())
 		m.resizeActivePanes()
+		m.persist()
 		return
 	}
 
@@ -415,6 +522,7 @@ func (m *Model) closeActivePane() {
 	m.focus = focusPanes
 	m.notice = "Closed and rebalanced pane"
 	m.resizeActivePanes()
+	m.persist()
 }
 
 func (m *Model) closePane(paneID string) {
@@ -431,7 +539,9 @@ func (m *Model) switchTab(delta int) {
 	m.activeTab = (m.activeTab + delta + len(m.tabs)) % len(m.tabs)
 	m.sidebarCursor = m.activeTab
 	m.focus = focusPanes
+	m.ensureProjectStarted(m.active())
 	m.resizeActivePanes()
+	m.persist()
 }
 
 func (m *Model) movePaneFocus(direction layout.Direction) {
@@ -442,6 +552,7 @@ func (m *Model) movePaneFocus(direction layout.Direction) {
 	next := layout.Neighbor(active.root, active.activePane, direction, m.workspaceRect())
 	if next != "" {
 		active.activePane = next
+		m.persist()
 	}
 }
 
@@ -465,6 +576,7 @@ func (m *Model) swapActivePane(direction layout.Direction) {
 	m.focus = focusPanes
 	m.notice = "Moved pane"
 	m.resizeActivePanes()
+	m.persist()
 }
 
 func (m *Model) balanceActiveLayout() {
@@ -477,7 +589,9 @@ func (m *Model) balanceActiveLayout() {
 	m.focus = focusPanes
 	m.notice = "Balanced panes"
 	m.resizeActivePanes()
+	m.persist()
 }
+
 func (m *Model) selectTab(index int) {
 	if index < 0 || index >= len(m.tabs) {
 		return
@@ -486,7 +600,9 @@ func (m *Model) selectTab(index int) {
 	m.sidebarCursor = index
 	m.focus = focusPanes
 	m.mode = modeNavigate
+	m.ensureProjectStarted(m.active())
 	m.resizeActivePanes()
+	m.persist()
 }
 
 func (m *Model) setNoticeFromEvents(events []terminal.Event) {
