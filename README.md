@@ -32,8 +32,14 @@ Split starts in navigation mode.
 | `Tab` | Move focus between panes and sidebar |
 | `Enter` | Enter the focused terminal |
 | Mouse click | Focus a terminal and immediately enter input mode |
+| Right-click pane | Open the pane action menu |
 | `q` | Quit while in navigation mode |
 | `Ctrl+B` | Open the one-shot command prefix |
+
+The right-click pane menu provides mouse access to split-right, split-below,
+and new-tab launchers for PowerShell, Codex, and Claude Code. It also supports
+directional pane movement, balancing, and closing. Hover selects a row; click
+a row to activate it, or press `Esc` to close the menu.
 
 Prefix commands:
 

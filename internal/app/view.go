@@ -28,7 +28,7 @@ func (m *Model) View() tea.View {
 }
 
 func (m *Model) renderCursor() *tea.Cursor {
-	if m.launcherOpen || m.mode != modeTerminal || m.focus != focusPanes {
+	if m.launcherOpen || m.contextMenu.open || m.mode != modeTerminal || m.focus != focusPanes {
 		return nil
 	}
 	active := m.active()
@@ -94,6 +94,9 @@ func (m *Model) render() string {
 	}
 	if m.launcherOpen {
 		result = m.renderLauncherOverlay(result)
+	}
+	if m.contextMenu.open {
+		result = m.renderPaneContextMenuOverlay(result)
 	}
 	return result
 }
@@ -437,6 +440,7 @@ func (m *Model) renderOverview(width, height int) string {
 			styles.muted.Render("The first vertical slice is running.") + "\n\n" +
 			styles.eyebrow.Render("QUICK START") + "\n" +
 			key.Render("click/enter") + " focus a terminal\n" +
+			key.Render("right-click") + " pane action menu\n" +
 			key.Render("ctrl+b  v") + "   split right\n" +
 			key.Render("ctrl+b  s") + "   split down\n" +
 			key.Render("ctrl+b  c") + "   new shell tab\n" +
@@ -457,7 +461,10 @@ func (m *Model) renderOverview(width, height int) string {
 func (m *Model) renderStatus(width int) string {
 	modeLabel := " NAV "
 	modeColor := palette.accent
-	if m.launcherOpen {
+	if m.contextMenu.open {
+		modeLabel = " MENU "
+		modeColor = palette.secondary
+	} else if m.launcherOpen {
 		modeLabel = " LAUNCH "
 		modeColor = palette.yellow
 	} else {
@@ -477,7 +484,9 @@ func (m *Model) renderStatus(width int) string {
 		Render(modeLabel)
 
 	hint := " "
-	if m.launcherOpen {
+	if m.contextMenu.open {
+		hint += "click an action  hover to select  esc close"
+	} else if m.launcherOpen {
 		hint += "enter split right  s split down  t new tab  esc cancel"
 	} else {
 		switch m.mode {
@@ -486,7 +495,7 @@ func (m *Model) renderStatus(width int) string {
 		case modePrefix:
 			hint += "a launch  v/s split  x close  hjkl move pane  = balance  n navigate"
 		default:
-			hint += "click/enter terminal  arrows/hjkl focus  ctrl+b commands (x close, hjkl move)"
+			hint += "click terminal  right-click pane menu  arrows/hjkl focus  ctrl+b commands"
 		}
 	}
 	left := badge + styles.status.Render(hint)

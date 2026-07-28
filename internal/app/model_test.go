@@ -229,3 +229,101 @@ func TestClickingTerminalPaneEntersInputMode(t *testing.T) {
 		t.Fatal("clicking an informational pane should select it without entering input mode")
 	}
 }
+
+func TestPaneContextMenuSupportsMouseAgentLaunch(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+
+	const width = 100
+	const height = 30
+	_, _ = model.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	active := model.active()
+	terminalRect := active.root.Rects(model.workspaceRect())[active.activePane]
+
+	model.handleMouseClick(tea.Mouse{
+		X:      terminalRect.X + terminalRect.Width/2,
+		Y:      terminalRect.Y + terminalRect.Height/2,
+		Button: tea.MouseLeft,
+	})
+	if model.mode != modeTerminal {
+		t.Fatal("terminal should be in input mode before opening its context menu")
+	}
+
+	model.handleMouseClick(tea.Mouse{
+		X:      terminalRect.X + terminalRect.Width - 2,
+		Y:      terminalRect.Y + terminalRect.Height - 2,
+		Button: tea.MouseRight,
+	})
+	if !model.contextMenu.open || model.mode != modeNavigate {
+		t.Fatal("right-click should open the pane context menu outside terminal-input mode")
+	}
+	geometry := model.paneContextMenuGeometry()
+	if geometry.x < 0 || geometry.y < 0 || geometry.x+geometry.width > width || geometry.y+geometry.height > height {
+		t.Fatalf("context menu should be clamped to the viewport: %#v", geometry)
+	}
+	view := model.View()
+	if view.Cursor != nil {
+		t.Fatal("context menu should hide the terminal cursor")
+	}
+	if !strings.Contains(view.Content, "Split right") || !strings.Contains(view.Content, "Close pane") {
+		t.Fatal("root context menu is missing pane actions")
+	}
+	for row, line := range strings.Split(view.Content, "\n") {
+		if got := ansi.StringWidth(line); got != width {
+			t.Fatalf("menu row %d: expected width %d, got %d", row, width, got)
+		}
+	}
+
+	model.handlePaneContextMenuMotion(tea.Mouse{X: geometry.x + 2, Y: geometry.y + 2})
+	if model.contextMenu.selected != 1 {
+		t.Fatal("hovering a menu row should select it")
+	}
+
+	model.handlePaneContextMenuClick(tea.Mouse{
+		X:      geometry.x + 2,
+		Y:      geometry.y + 1,
+		Button: tea.MouseLeft,
+	})
+	if model.contextMenu.kind != paneMenuSplitRight {
+		t.Fatal("clicking Split right should open the agent profile submenu")
+	}
+	if !strings.Contains(model.View().Content, "Claude Code") {
+		t.Fatal("agent submenu should include Claude Code")
+	}
+
+	before := len(active.root.Leaves())
+	geometry = model.paneContextMenuGeometry()
+	model.handlePaneContextMenuClick(tea.Mouse{
+		X:      geometry.x + 2,
+		Y:      geometry.y + 1,
+		Button: tea.MouseLeft,
+	})
+	if model.contextMenu.open {
+		t.Fatal("context menu should close after launching a profile")
+	}
+	if got := len(active.root.Leaves()); got != before+1 {
+		t.Fatalf("expected mouse launch to create a pane, got %d panes", got)
+	}
+	if item := model.activePane(); item == nil || item.profile != profileShell {
+		t.Fatal("mouse launch should create the selected PowerShell profile")
+	}
+}
+
+func TestPaneContextMenuEscapeRestoresTerminalMode(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+
+	_, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	active := model.active()
+	rect := active.root.Rects(model.workspaceRect())[active.activePane]
+	model.handleMouseClick(tea.Mouse{X: rect.X + 2, Y: rect.Y + 2, Button: tea.MouseLeft})
+	model.handleMouseClick(tea.Mouse{X: rect.X + 2, Y: rect.Y + 2, Button: tea.MouseRight})
+	_, _ = model.handlePaneContextMenuKey(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+
+	if model.contextMenu.open {
+		t.Fatal("escape should close the pane context menu")
+	}
+	if model.mode != modeTerminal {
+		t.Fatal("canceling the context menu should restore terminal-input mode")
+	}
+}

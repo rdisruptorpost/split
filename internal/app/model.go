@@ -98,6 +98,7 @@ type Model struct {
 	launchOptions    []launchOption
 	launcherOpen     bool
 	launcherSelected int
+	contextMenu      paneContextMenuState
 }
 
 type terminalBatchMsg struct {

@@ -20,7 +20,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForTerminalEvents(m.events)
 
 	case tea.PasteMsg:
-		if m.mode == modeTerminal && !m.launcherOpen {
+		if m.mode == modeTerminal && !m.launcherOpen && !m.contextMenu.open {
 			if item := m.activePane(); item != nil && item.session != nil {
 				item.session.Paste(message.Content)
 			}
@@ -28,12 +28,23 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseClickMsg:
-		if !m.launcherOpen {
+		if m.contextMenu.open {
+			m.handlePaneContextMenuClick(message.Mouse())
+		} else if !m.launcherOpen {
 			m.handleMouseClick(message.Mouse())
 		}
 		return m, nil
 
+	case tea.MouseMotionMsg:
+		if m.contextMenu.open {
+			m.handlePaneContextMenuMotion(message.Mouse())
+		}
+		return m, nil
+
 	case tea.KeyPressMsg:
+		if m.contextMenu.open {
+			return m.handlePaneContextMenuKey(message)
+		}
 		if m.launcherOpen {
 			return m.handleLauncherKey(message)
 		}
@@ -128,7 +139,7 @@ func (m *Model) handleDirectionalNavigation(key string) {
 func (m *Model) handlePrefixKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := message.String()
 	switch key {
-	case "escape":
+	case "esc", "escape":
 		m.mode = m.modeBeforePrefix
 	case "ctrl+b", "b":
 		if item := m.activePane(); item != nil && item.session != nil {
@@ -181,7 +192,7 @@ func (m *Model) handlePrefixKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleLauncherKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch message.String() {
-	case "escape", "q":
+	case "esc", "escape", "q":
 		m.launcherOpen = false
 		m.mode = modeNavigate
 	case "up", "k":
@@ -199,6 +210,22 @@ func (m *Model) handleLauncherKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 }
 
 func (m *Model) handleMouseClick(mouse tea.Mouse) {
+	if mouse.Button == tea.MouseRight {
+		if !m.workspaceRect().Contains(mouse.X, mouse.Y) {
+			return
+		}
+		active := m.active()
+		if active == nil {
+			return
+		}
+		for paneID, rect := range active.root.Rects(m.workspaceRect()) {
+			if rect.Contains(mouse.X, mouse.Y) {
+				m.openPaneContextMenu(mouse.X, mouse.Y, paneID)
+				return
+			}
+		}
+		return
+	}
 	if mouse.Button != tea.MouseLeft {
 		return
 	}
