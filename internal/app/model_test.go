@@ -230,6 +230,32 @@ func TestClickingTerminalPaneEntersInputMode(t *testing.T) {
 	}
 }
 
+func TestPaneContextMenuEnablesHoverTracking(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+
+	_, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	if got := model.View().MouseMode; got != tea.MouseModeCellMotion {
+		t.Fatalf("normal view should use cell-motion mouse tracking, got %v", got)
+	}
+
+	active := model.active()
+	rect := active.root.Rects(model.workspaceRect())[active.activePane]
+	model.handleMouseClick(tea.Mouse{
+		X:      rect.X + 2,
+		Y:      rect.Y + 2,
+		Button: tea.MouseRight,
+	})
+	if got := model.View().MouseMode; got != tea.MouseModeAllMotion {
+		t.Fatalf("open context menu should enable no-button hover tracking, got %v", got)
+	}
+
+	model.closePaneContextMenu(true)
+	if got := model.View().MouseMode; got != tea.MouseModeCellMotion {
+		t.Fatalf("closing context menu should restore cell-motion tracking, got %v", got)
+	}
+}
+
 func TestPaneContextMenuSupportsMouseAgentLaunch(t *testing.T) {
 	model := New(t.TempDir())
 	defer model.Close()

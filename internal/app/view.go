@@ -20,6 +20,9 @@ func (m *Model) View() tea.View {
 	view.AltScreen = true
 	view.ReportFocus = true
 	view.MouseMode = tea.MouseModeCellMotion
+	if m.contextMenu.open {
+		view.MouseMode = tea.MouseModeAllMotion
+	}
 	view.BackgroundColor = palette.background
 	view.ForegroundColor = palette.text
 	view.WindowTitle = "Split — " + m.projectName()
