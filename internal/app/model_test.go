@@ -589,6 +589,87 @@ func TestPaneContextMenuCreatesPlainTerminalWithMouse(t *testing.T) {
 		t.Fatal("mouse splits should create plain PowerShell terminals")
 	}
 }
+func TestPaneContextMenuRenamesTerminalAndOverridesAgentLabel(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+
+	_, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	paneID := model.active().activePane
+	rect := model.active().root.Rects(model.workspaceRect())[paneID]
+	model.handleMouseClick(tea.Mouse{
+		X: rect.X + 2, Y: rect.Y + 2, Button: tea.MouseLeft,
+	})
+	model.handleMouseClick(tea.Mouse{
+		X: rect.X + 2, Y: rect.Y + 2, Button: tea.MouseRight,
+	})
+
+	menuPlain := ansi.Strip(model.View().Content)
+	if !strings.Contains(menuPlain, "Rename terminal") {
+		t.Fatalf("pane menu is missing terminal rename: %q", menuPlain)
+	}
+	renameIndex := -1
+	for index, item := range model.paneContextMenuItems() {
+		if item.action == paneMenuRename {
+			renameIndex = index
+			break
+		}
+	}
+	if renameIndex < 0 {
+		t.Fatal("Rename terminal action is absent from the pane menu model")
+	}
+	menuGeometry := model.paneContextMenuGeometry()
+	_, _ = model.Update(tea.MouseMotionMsg(tea.Mouse{
+		X: menuGeometry.x + 2, Y: menuGeometry.y + 1 + renameIndex,
+	}))
+	if model.contextMenu.selected != renameIndex {
+		t.Fatal("hovering Rename terminal should select it")
+	}
+	_, _ = model.Update(tea.MouseClickMsg(tea.Mouse{
+		X: menuGeometry.x + 2, Y: menuGeometry.y + 1 + renameIndex, Button: tea.MouseLeft,
+	}))
+	if model.contextMenu.open || !model.renameDialog.open ||
+		model.renameDialog.target != renameTargetPane || model.renameDialog.paneID != paneID {
+		t.Fatalf("Rename terminal should open the pane rename dialog: menu=%#v dialog=%#v", model.contextMenu, model.renameDialog)
+	}
+	dialogPlain := ansi.Strip(model.View().Content)
+	if !strings.Contains(dialogPlain, "Rename terminal") ||
+		!strings.Contains(dialogPlain, "Terminal name") {
+		t.Fatalf("terminal rename dialog is incomplete: %q", dialogPlain)
+	}
+
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace}))
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if !model.renameDialog.open ||
+		!strings.Contains(ansi.Strip(model.View().Content), "Terminal name cannot be empty") {
+		t.Fatal("a blank terminal name should keep the dialog open with a visible error")
+	}
+
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Text: "API worker", Code: 'A'}))
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if model.renameDialog.open {
+		t.Fatal("saving a valid terminal name should close the dialog")
+	}
+	if got := model.panes[paneID].title; got != "API worker" {
+		t.Fatalf("terminal title = %q, want API worker", got)
+	}
+	if !strings.Contains(ansi.Strip(model.View().Content), "API worker") {
+		t.Fatal("renamed terminal should use its custom pane-frame title")
+	}
+
+	model.agents[paneID] = agent.State{
+		PaneID: paneID,
+		PID:    101,
+		Kind:   agent.KindCodex,
+		Status: agent.StatusWorking,
+	}
+	sidebarPlain := ansi.Strip(model.renderSidebar(sidebarWidth, 30))
+	if !strings.Contains(sidebarPlain, "API worker") {
+		t.Fatalf("agent row should use the custom terminal name: %q", sidebarPlain)
+	}
+	if strings.Contains(sidebarPlain, "Codex") {
+		t.Fatalf("detected agent name should be overridden after a pane rename: %q", sidebarPlain)
+	}
+}
 func TestPaneContextMenuEscapeRestoresTerminalMode(t *testing.T) {
 	model := New(t.TempDir())
 	defer model.Close()

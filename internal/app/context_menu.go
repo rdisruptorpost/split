@@ -18,6 +18,7 @@ const (
 	paneMenuSplitRight
 	paneMenuSplitBelow
 	paneMenuNewProject
+	paneMenuRename
 	paneMenuMove
 	paneMenuBalance
 	paneMenuClose
@@ -102,6 +103,7 @@ func (m *Model) paneContextMenuItems() []paneContextMenuItem {
 		{label: "Split right", hint: "\u2192", action: paneMenuSplitRight, enabled: active != nil},
 		{label: "Split below", hint: "\u2193", action: paneMenuSplitBelow, enabled: active != nil},
 		{label: "Open in new project", hint: "+", action: paneMenuNewProject, enabled: true},
+		{label: "Rename terminal", hint: "r", action: paneMenuRename, enabled: active != nil},
 		{separator: true},
 		{label: "Move left", hint: "\u2190", action: paneMenuMove, direction: layout.Left, enabled: m.canMoveActivePane(layout.Left)},
 		{label: "Move right", hint: "\u2192", action: paneMenuMove, direction: layout.Right, enabled: m.canMoveActivePane(layout.Right)},
@@ -152,6 +154,8 @@ func (m *Model) activatePaneContextMenuItem(index int) {
 		return
 	}
 	item := items[index]
+	targetPane := m.contextMenu.targetPane
+	previousMode := m.contextMenu.previousMode
 	m.contextMenu.selected = index
 	m.closePaneContextMenu(false)
 	switch item.action {
@@ -161,6 +165,8 @@ func (m *Model) activatePaneContextMenuItem(index int) {
 		m.splitActive(layout.Rows)
 	case paneMenuNewProject:
 		m.newProject()
+	case paneMenuRename:
+		m.openPaneRenameDialog(targetPane, previousMode)
 	case paneMenuMove:
 		m.swapActivePane(item.direction)
 	case paneMenuBalance:
@@ -180,6 +186,13 @@ func (m *Model) handlePaneContextMenuKey(message tea.KeyPressMsg) (tea.Model, te
 		m.movePaneContextMenuSelection(1)
 	case "enter", "right", "l":
 		m.activatePaneContextMenuItem(m.contextMenu.selected)
+	case "r":
+		for index, item := range m.paneContextMenuItems() {
+			if item.action == paneMenuRename {
+				m.activatePaneContextMenuItem(index)
+				break
+			}
+		}
 	}
 	return m, nil
 }

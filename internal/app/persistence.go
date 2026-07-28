@@ -92,9 +92,13 @@ func (m *Model) stateSnapshot() (state.Snapshot, error) {
 			if item == nil {
 				return state.Snapshot{}, fmt.Errorf("project %s references missing pane %s", project.id, paneID)
 			}
+			paneTitle := strings.TrimSpace(item.title)
+			if paneTitle == "" {
+				paneTitle = "PowerShell"
+			}
 			savedProject.Panes = append(savedProject.Panes, state.Pane{
 				ID:               item.id,
-				Title:            "PowerShell",
+				Title:            paneTitle,
 				WorkingDirectory: item.cwd,
 			})
 		}
@@ -120,9 +124,13 @@ func (m *Model) restoreSnapshot(snapshot state.Snapshot) error {
 			if cwd == "" {
 				cwd = savedProject.RootPath
 			}
+			paneTitle := strings.TrimSpace(savedPane.Title)
+			if paneTitle == "" {
+				paneTitle = "PowerShell"
+			}
 			item := &pane{
 				id:    savedPane.ID,
-				title: "PowerShell",
+				title: paneTitle,
 				kind:  paneTerminal,
 				cwd:   cwd,
 			}

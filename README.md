@@ -52,7 +52,7 @@ Split stores durable workspace metadata in `%LOCALAPPDATA%\Split\state.db` using
 
 - project names, order, roots, and selected project;
 - sidebar visibility and focused pane;
-- every pane's working directory;
+- every pane's custom title and working directory;
 - the full split tree and ratios.
 
 The background runtime owns the live ConPTY handles, terminal emulators, and child processes. Detaching and reconnecting therefore returns to the exact live terminal, including a Codex or Claude session launched by typing its command in PowerShell.
@@ -72,12 +72,12 @@ Split starts in navigation mode.
 | Click anywhere in sidebar | Leave terminal-input mode and focus project navigation; `q` now detaches |
 | Click an agent row | Select its project and pane while keeping keyboard focus in the sidebar |
 | Right-click project | Open project actions for Rename project or Close project |
-| Right-click pane | Open the mouse pane-action menu |
+| Right-click pane | Open pane actions, including Rename terminal |
 | `[` / `]` | Previous or next project |
 | `q` or `Ctrl+C` | Detach the UI while in navigation mode |
 | `Ctrl+B` | Open the one-shot command prefix |
 
-The pane right-click menu directly creates a PowerShell split to the right or below, creates a new project, moves the focused pane, balances the layout, or closes the pane. The project right-click menu renames a project or closes all of its panes and removes it; Close project is disabled for the final remaining project. Hover selects a row and left-click activates it.
+The pane right-click menu renames the terminal, creates a PowerShell split to the right or below, creates a new project, moves the focused pane, balances the layout, or closes the pane. A custom terminal name replaces the pane-frame title and its detected Codex or Claude label in the project sidebar while preserving live agent status. The project right-click menu renames a project or closes all of its panes and removes it; Close project is disabled for the final remaining project. Hover selects a row and left-click activates it.
 
 Prefix commands:
 

@@ -89,6 +89,35 @@ func TestProjectRenameIsPersisted(t *testing.T) {
 	}
 }
 
+func TestTerminalRenameIsPersistedAsAPlainTerminalLabel(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	model, err := Open(root, statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paneID := model.active().activePane
+	model.openPaneRenameDialog(paneID, modeNavigate)
+	model.insertProjectRenameText("review agent")
+	model.confirmProjectRename()
+	if got := model.panes[paneID].title; got != "review agent" {
+		t.Fatalf("renamed terminal title = %q", got)
+	}
+	model.Close()
+
+	restored, err := Open(root, statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	item := restored.panes[paneID]
+	if item == nil || item.title != "review agent" {
+		t.Fatalf("restored terminal title = %#v", item)
+	}
+	if item.kind != paneTerminal {
+		t.Fatalf("a custom label must still restore as a plain terminal, got kind %v", item.kind)
+	}
+}
 func TestClosedProjectIsRemovedFromPersistentState(t *testing.T) {
 	root := t.TempDir()
 	statePath := filepath.Join(t.TempDir(), "state.db")
@@ -147,7 +176,7 @@ func TestRestoredInactiveProjectStartsLazilyWhenSelected(t *testing.T) {
 	}
 }
 
-func TestLegacyAgentPanesRestoreAsPlainTerminals(t *testing.T) {
+func TestSavedPaneTitlesRestoreAsPlainTerminalLabels(t *testing.T) {
 	root := t.TempDir()
 	model := newModel(root)
 	snapshot := state.Snapshot{
@@ -166,8 +195,8 @@ func TestLegacyAgentPanesRestoreAsPlainTerminals(t *testing.T) {
 	defer model.Close()
 
 	item := model.activePane()
-	if item == nil || item.title != "PowerShell" || item.cwd != root {
-		t.Fatalf("legacy agent pane was not normalized: %#v", item)
+	if item == nil || item.title != "Codex" || item.kind != paneTerminal || item.cwd != root {
+		t.Fatalf("saved pane title was not restored as a plain terminal label: %#v", item)
 	}
 }
 func TestLayoutPersistenceRejectsMalformedTrees(t *testing.T) {

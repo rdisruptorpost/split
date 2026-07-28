@@ -26,9 +26,18 @@ const (
 	projectRenameSave
 )
 
+type renameTarget uint8
+
+const (
+	renameTargetProject renameTarget = iota
+	renameTargetPane
+)
+
 type projectRenameState struct {
 	open                  bool
+	target                renameTarget
 	projectIndex          int
+	paneID                string
 	value                 []rune
 	cursor                int
 	selectAll             bool
@@ -67,6 +76,7 @@ func (m *Model) openProjectRenameDialog(projectIndex int) {
 	name := []rune(m.tabs[projectIndex].title)
 	m.renameDialog = projectRenameState{
 		open:                  true,
+		target:                renameTargetProject,
 		projectIndex:          projectIndex,
 		value:                 name,
 		cursor:                len(name),
@@ -81,6 +91,46 @@ func (m *Model) openProjectRenameDialog(projectIndex int) {
 	m.notice = ""
 }
 
+func (m *Model) openPaneRenameDialog(paneID string, previousMode mode) {
+	active := m.active()
+	item := m.panes[paneID]
+	if active == nil || item == nil || !active.root.ContainsPane(paneID) {
+		return
+	}
+	if m.contextMenu.open {
+		m.closePaneContextMenu(false)
+	}
+	if m.projectMenu.open {
+		m.closeProjectContextMenu()
+	}
+	active.activePane = paneID
+	name := []rune(strings.TrimSpace(item.title))
+	if len(name) == 0 {
+		name = []rune("PowerShell")
+	}
+	m.renameDialog = projectRenameState{
+		open:                  true,
+		target:                renameTargetPane,
+		projectIndex:          m.activeTab,
+		paneID:                paneID,
+		value:                 name,
+		cursor:                len(name),
+		selectAll:             true,
+		previousMode:          previousMode,
+		previousFocus:         focusPanes,
+		previousSidebarCursor: m.sidebarCursor,
+	}
+	m.mode = modeNavigate
+	m.focus = focusPanes
+	m.notice = ""
+}
+
+func (m *Model) renameDialogLabels() (string, string) {
+	if m.renameDialog.target == renameTargetPane {
+		return "terminal", "Terminal name"
+	}
+	return "project", "Project name"
+}
 func (m *Model) closeProjectRenameDialog(restoreMode bool) {
 	previousMode := m.renameDialog.previousMode
 	previousFocus := m.renameDialog.previousFocus
@@ -107,23 +157,40 @@ func (m *Model) closeProjectRenameDialog(restoreMode bool) {
 }
 
 func (m *Model) confirmProjectRename() {
-	if !m.renameDialog.open ||
-		m.renameDialog.projectIndex < 0 ||
-		m.renameDialog.projectIndex >= len(m.tabs) {
-		m.closeProjectRenameDialog(true)
+	if !m.renameDialog.open {
 		return
 	}
+
+	switch m.renameDialog.target {
+	case renameTargetPane:
+		if m.panes[m.renameDialog.paneID] == nil {
+			m.closeProjectRenameDialog(true)
+			return
+		}
+	default:
+		if m.renameDialog.projectIndex < 0 ||
+			m.renameDialog.projectIndex >= len(m.tabs) {
+			m.closeProjectRenameDialog(true)
+			return
+		}
+	}
+
 	name := strings.TrimSpace(string(m.renameDialog.value))
+	noun, fieldLabel := m.renameDialogLabels()
 	if name == "" {
-		m.renameDialog.errorMessage = "Project name cannot be empty"
+		m.renameDialog.errorMessage = fieldLabel + " cannot be empty"
 		m.renameDialog.selectAll = true
 		m.renameDialog.cursor = len(m.renameDialog.value)
 		return
 	}
-	projectIndex := m.renameDialog.projectIndex
-	m.tabs[projectIndex].title = name
+
+	if m.renameDialog.target == renameTargetPane {
+		m.panes[m.renameDialog.paneID].title = name
+	} else {
+		m.tabs[m.renameDialog.projectIndex].title = name
+	}
 	m.closeProjectRenameDialog(true)
-	m.notice = "Renamed project to " + name
+	m.notice = "Renamed " + noun + " to " + name
 	m.persist()
 }
 
@@ -405,11 +472,12 @@ func (m *Model) renderProjectRenameOverlay(base string) string {
 	fieldStyle := lipgloss.NewStyle().Foreground(palette.text).Background(palette.surfaceAlt)
 	selectedStyle := lipgloss.NewStyle().Foreground(palette.background).Background(palette.accent)
 
-	title := ansi.Truncate(" Rename project ", innerWidth, "")
+	noun, fieldLabel := m.renameDialogLabels()
+	title := ansi.Truncate(" Rename "+noun+" ", innerWidth, "")
 	lines := []string{
 		border.Render("\u250c" + title + strings.Repeat("\u2500", max(0, innerWidth-ansi.StringWidth(title))) + "\u2510"),
 		border.Render("\u2502") + body.Render(strings.Repeat(" ", innerWidth)) + border.Render("\u2502"),
-		border.Render("\u2502") + labelStyle.Render(fitLine("  Project name", innerWidth)) + border.Render("\u2502"),
+		border.Render("\u2502") + labelStyle.Render(fitLine("  "+fieldLabel, innerWidth)) + border.Render("\u2502"),
 	}
 
 	visible, _, _ := projectRenameVisibleValue(

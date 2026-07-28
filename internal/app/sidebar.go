@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"image/color"
+	"strings"
 	"time"
 
 	"charm.land/lipgloss/v2"
@@ -87,6 +88,13 @@ func (m *Model) renderProjectSidebarRow(projectIndex, width int) string {
 }
 
 func (m *Model) agentDisplayName(row sidebarRow) string {
+	if item := m.panes[row.paneID]; item != nil {
+		title := strings.TrimSpace(item.title)
+		if title != "" && !strings.EqualFold(title, "PowerShell") {
+			return title
+		}
+	}
+
 	current, exists := m.agents[row.paneID]
 	if !exists {
 		return "Agent"

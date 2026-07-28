@@ -420,7 +420,8 @@ func (m *Model) renderStatus(width int) string {
 
 	hint := " "
 	if m.renameDialog.open {
-		hint += "type a project name  enter save  esc cancel"
+		noun, _ := m.renameDialogLabels()
+		hint += "type a " + noun + " name  enter save  esc cancel"
 	} else if m.projectMenu.open || m.contextMenu.open {
 		hint += "click an action  hover to select  esc close"
 	} else {
