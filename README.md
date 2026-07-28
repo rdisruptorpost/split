@@ -2,12 +2,13 @@
 
 Split is a terminal-native workspace for running shells and coding agents side by side. It combines a compact project sidebar, tmux-style panes, real Windows ConPTY terminals, and a persistent background runtime.
 
-Every pane is an ordinary PowerShell terminal. Split does not special-case Codex, Claude Code, or another terminal application: click a pane and type the same command you would use in Windows Terminal. This also means provider-native commands for starting or resuming conversations work without Split needing provider hooks or transcript metadata.
+Every pane is an ordinary PowerShell terminal. Split does not special-case launching or resuming Codex, Claude Code, or another terminal application: click a pane and type the same command you would use in Windows Terminal. The runtime passively recognizes Codex and Claude descendants so the sidebar can report their live state without taking ownership of their commands, hooks, or transcript metadata.
 
 ## Current foundation
 
 - Bubble Tea v2 interface with a neutral, high-contrast graphite theme;
 - sidebar-only project switching and a clickable `+ New project` row;
+- nested Codex and Claude rows with loading/working spinners, blocked alerts, completion ticks, interrupted turns, idle markers, and exited markers;
 - recursive split-tree layouts with movement, closing, and automatic balancing;
 - keyboard prefix controls plus a hoverable right-click pane menu;
 - one-click mouse focus for terminal input;
@@ -68,6 +69,7 @@ Split starts in navigation mode.
 | `Tab` | Move focus between panes and the project sidebar |
 | `Enter` | Enter the focused terminal |
 | Mouse click | Focus a terminal and immediately enter input mode |
+| Click an agent row | Switch project, focus that agent pane, and enter input mode |
 | Right-click pane | Open the mouse pane-action menu |
 | `[` / `]` | Previous or next project |
 | `q` or `Ctrl+C` | Detach the UI while in navigation mode |
@@ -95,6 +97,6 @@ New projects and splits always start as PowerShell terminals at the current proj
 
 ## Architecture
 
-The hidden runtime owns the real `app.Model`, SQLite store, terminal emulators, ConPTY handles, and child processes. The visible Bubble Tea client only forwards resize, key, paste, and mouse messages and renders versioned frames received over the local named pipe. Disconnecting a client resets transient menus and focus state but does not close a terminal. An explicit stop persists the model, closes every ConPTY, and exits the runtime before acknowledging the command.
+The hidden runtime owns the real `app.Model`, SQLite store, terminal emulators, ConPTY handles, child processes, and agent monitor. The monitor walks each PowerShell descendant tree and combines the recognized process with live bottom-of-screen and OSC-title signals; it never launches or resumes the provider itself. The visible Bubble Tea client only forwards resize, key, paste, and mouse messages and renders versioned frames received over the local named pipe. Disconnecting a client resets transient menus and focus state but does not close a terminal. An explicit stop persists the model, closes every ConPTY, and exits the runtime before acknowledging the command.
 
 This terminal-first boundary keeps Split provider-agnostic while leaving room for future structured integrations, such as a native Codex app-server pane, without making ordinary terminal workflows depend on them.

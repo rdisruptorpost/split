@@ -10,6 +10,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"split/internal/agent"
 	"split/internal/layout"
 	"split/internal/terminal"
 )
@@ -108,46 +109,55 @@ func (m *Model) renderSidebar(width, height int) string {
 	}
 	lines = append(lines, " "+styles.eyebrow.Render("PROJECTS"))
 
-	for index, item := range m.tabs {
-		active := index == m.activeTab
-		cursor := index == m.sidebarCursor && m.focus == focusSidebar
-		dot := m.renderTabStatus(item)
-		label := dot + " " + item.title
-		if cursor {
-			label = "› " + label
-		} else {
-			label = "  " + label
-		}
+	for _, row := range m.sidebarRows() {
+		switch row.kind {
+		case sidebarProjectRow:
+			item := m.tabs[row.projectIndex]
+			active := row.projectIndex == m.activeTab
+			cursor := row.projectIndex == m.sidebarCursor && m.focus == focusSidebar
+			label := m.renderTabStatus(item) + " " + item.title
+			if cursor {
+				label = "› " + label
+			} else {
+				label = "  " + label
+			}
+			label = fitLine(label, contentWidth)
+			if active {
+				label = styles.activeSession.Width(contentWidth).Render(label)
+			} else {
+				label = styles.session.Width(contentWidth).Render(label)
+			}
+			lines = append(lines, label)
 
-		suffix := fmt.Sprintf("%d", len(item.root.Leaves()))
-		gap := max(1, contentWidth-ansi.StringWidth(label)-ansi.StringWidth(suffix)-1)
-		row := label + strings.Repeat(" ", gap) + styles.muted.Render(suffix)
-		if active {
-			row = styles.activeSession.Width(contentWidth).Render(row)
-		} else {
-			row = styles.session.Width(contentWidth).Render(row)
+		case sidebarAgentRow:
+			lines = append(lines, m.renderAgentSidebarRow(row, contentWidth))
+
+		case sidebarNewProjectRow:
+			label := "  + New project"
+			newProjectRow := lipgloss.NewStyle().
+				Width(contentWidth).
+				Foreground(palette.accent).
+				Bold(true).
+				Render(label)
+			if m.focus == focusSidebar && m.sidebarCursor == len(m.tabs) {
+				newProjectRow = styles.activeSession.Width(contentWidth).Render("› + New project")
+			}
+			lines = append(lines, newProjectRow)
 		}
-		lines = append(lines, row)
 	}
 
-	newProjectLabel := "  + New project"
-	newProjectRow := lipgloss.NewStyle().
-		Width(contentWidth).
-		Foreground(palette.accent).
-		Bold(true).
-		Render(newProjectLabel)
-	if m.focus == focusSidebar && m.sidebarCursor == len(m.tabs) {
-		newProjectRow = styles.activeSession.Width(contentWidth).Render("› + New project")
+	footer := []string{
+		" " + styles.muted.Render("ctrl+b") + " " + styles.text.Render("menu") + "  " + styles.muted.Render("q") + " " + styles.text.Render("detach"),
+		" " + styles.muted.Render("tab") + "    " + styles.text.Render("switch focus"),
 	}
-	lines = append(lines, newProjectRow)
-
-	for len(lines) < height-2 {
+	bodyHeight := max(0, height-len(footer))
+	if len(lines) > bodyHeight {
+		lines = lines[:bodyHeight]
+	}
+	for len(lines) < bodyHeight {
 		lines = append(lines, "")
 	}
-	lines = append(lines,
-		" "+styles.muted.Render("ctrl+b")+" "+styles.text.Render("menu")+"  "+styles.muted.Render("q")+" "+styles.text.Render("detach"),
-		" "+styles.muted.Render("tab")+"    "+styles.text.Render("switch focus"),
-	)
+	lines = append(lines, footer...)
 
 	border := lipgloss.NewStyle().Foreground(palette.border).Render("│")
 	output := make([]string, height)
@@ -162,6 +172,40 @@ func (m *Model) renderSidebar(width, height int) string {
 }
 
 func (m *Model) renderTabStatus(item *tab) string {
+	var hasAgent bool
+	var hasWorking bool
+	var hasFinished bool
+	var hasExited bool
+	for _, paneID := range item.root.Leaves() {
+		current, exists := m.agents[paneID]
+		if !exists {
+			continue
+		}
+		hasAgent = true
+		switch current.Status {
+		case agent.StatusBlocked, agent.StatusInterrupted:
+			return lipgloss.NewStyle().Foreground(palette.red).Render("●")
+		case agent.StatusLoading, agent.StatusWorking:
+			hasWorking = true
+		case agent.StatusExited:
+			hasExited = true
+		case agent.StatusFinished:
+			hasFinished = true
+		}
+	}
+	if hasWorking {
+		return lipgloss.NewStyle().Foreground(palette.yellow).Render("●")
+	}
+	if hasExited {
+		return lipgloss.NewStyle().Foreground(palette.red).Render("●")
+	}
+	if hasFinished {
+		return lipgloss.NewStyle().Foreground(palette.green).Render("●")
+	}
+	if hasAgent {
+		return lipgloss.NewStyle().Foreground(palette.green).Render("○")
+	}
+
 	state := terminal.Exited
 	for _, paneID := range item.root.Leaves() {
 		current := m.panes[paneID]
@@ -196,7 +240,6 @@ func (m *Model) renderTabStatus(item *tab) string {
 		return styles.muted.Render("○")
 	}
 }
-
 func (m *Model) renderWorkspace(width, height int) string {
 	active := m.active()
 	if active == nil {

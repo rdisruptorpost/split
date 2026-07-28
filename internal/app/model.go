@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"split/internal/agent"
 	"split/internal/layout"
 	"split/internal/state"
 	"split/internal/terminal"
@@ -74,6 +75,8 @@ type Model struct {
 	tabs              []*tab
 	activeTab         int
 	panes             map[string]*pane
+	agents            map[string]agent.State
+	agentTracker      *agent.Tracker
 	nextID            int
 	nextProjectNumber int
 
@@ -105,6 +108,8 @@ func newModel(root string) *Model {
 		focus:             focusPanes,
 		sidebarVisible:    true,
 		panes:             make(map[string]*pane),
+		agents:            make(map[string]agent.State),
+		agentTracker:      agent.NewTracker(),
 		events:            make(chan terminal.Event, 128),
 		nextProjectNumber: 2,
 	}
@@ -439,6 +444,90 @@ func (m *Model) TerminalEvents() <-chan terminal.Event {
 // ApplyTerminalEvents updates notices after the runtime drains terminal output.
 func (m *Model) ApplyTerminalEvents(events []terminal.Event) {
 	m.setNoticeFromEvents(events)
+}
+
+// RefreshAgents discovers Codex and Claude descendants in every live pane and
+// updates their terminal-derived state. It returns true when the visible state
+// changed and a new client frame is needed.
+func (m *Model) RefreshAgents(now time.Time) bool {
+	targets := make([]agent.Target, 0, len(m.panes))
+	for paneID, item := range m.panes {
+		if item == nil || item.session == nil {
+			continue
+		}
+		terminalState, _ := item.session.State()
+		targets = append(targets, agent.Target{
+			PaneID:     paneID,
+			RootPID:    item.session.ProcessID(),
+			Screen:     item.session.Render(),
+			Title:      item.session.Title(),
+			LastOutput: item.session.LastActivity(),
+			TerminalUp: terminalState == terminal.Running,
+		})
+	}
+
+	next := m.agentTracker.Refresh(targets, now)
+	changed := !sameAgentStates(m.agents, next)
+	m.agents = next
+	return changed
+}
+
+// markAgentSubmitted immediately reflects an Enter key sent to a recognized
+// agent while keeping the tracker in sync for the next process scan.
+func (m *Model) markAgentSubmitted(paneID string, now time.Time) bool {
+	current, exists := m.agents[paneID]
+	if !exists || current.Status == agent.StatusExited {
+		return false
+	}
+	if m.agentTracker != nil {
+		m.agentTracker.MarkSubmitted(paneID, now)
+	}
+	if current.Status != agent.StatusWorking {
+		current.Since = now
+	}
+	current.Status = agent.StatusWorking
+	m.agents[paneID] = current
+	return true
+}
+
+// markAgentInterrupted immediately shows an interrupted turn after Esc. The
+// tracker holds this state briefly so the next screen scan cannot turn it into
+// a successful completion tick.
+func (m *Model) markAgentInterrupted(paneID string, now time.Time) bool {
+	current, exists := m.agents[paneID]
+	if !exists || (current.Status != agent.StatusWorking && current.Status != agent.StatusLoading) {
+		return false
+	}
+	if m.agentTracker != nil {
+		m.agentTracker.MarkInterrupted(paneID, now)
+	}
+	current.Status = agent.StatusInterrupted
+	current.Since = now
+	m.agents[paneID] = current
+	return true
+}
+
+// HasAnimatingAgents reports whether the connected client needs quicker frames
+// for a loading or working spinner.
+func (m *Model) HasAnimatingAgents() bool {
+	for _, current := range m.agents {
+		if current.Status == agent.StatusLoading || current.Status == agent.StatusWorking {
+			return true
+		}
+	}
+	return false
+}
+
+func sameAgentStates(left, right map[string]agent.State) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for paneID, current := range left {
+		if other, exists := right[paneID]; !exists || current != other {
+			return false
+		}
+	}
+	return true
 }
 
 // TakeDetachRequest reports and clears a client detach request.

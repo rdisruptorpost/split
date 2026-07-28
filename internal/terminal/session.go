@@ -77,6 +77,7 @@ type Session struct {
 	state        State
 	stateErr     error
 	lastActivity time.Time
+	title        string
 	cursorShown  bool
 	cursorBlink  bool
 	cursorStyle  vt.CursorStyle
@@ -124,6 +125,9 @@ func Start(id string, command Command, width, height int, events chan<- Event) (
 		cursorStyle:  vt.CursorBlock,
 	}
 	emulator.SetCallbacks(vt.Callbacks{
+		Title: func(title string) {
+			session.title = title
+		},
 		CursorVisibility: func(visible bool) {
 			session.cursorShown = visible
 		},
@@ -213,6 +217,21 @@ func (s *Session) LastActivity() time.Time {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.lastActivity
+}
+
+func (s *Session) ProcessID() uint32 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.process == nil || s.process.Process == nil {
+		return 0
+	}
+	return uint32(s.process.Process.Pid)
+}
+
+func (s *Session) Title() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.title
 }
 
 func (s *Session) Render() string {

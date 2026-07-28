@@ -1,6 +1,8 @@
 package app
 
 import (
+	"time"
+
 	tea "charm.land/bubbletea/v2"
 
 	"split/internal/layout"
@@ -60,6 +62,12 @@ func (m *Model) handleKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if item := m.activePane(); item != nil && item.session != nil {
+			switch message.String() {
+			case "enter":
+				m.markAgentSubmitted(item.id, time.Now())
+			case "esc", "escape":
+				m.markAgentInterrupted(item.id, time.Now())
+			}
 			item.session.SendKey(message)
 		}
 		return m, nil
@@ -216,11 +224,33 @@ func (m *Model) handleMouseClick(mouse tea.Mouse) {
 	sidebar := m.effectiveSidebarWidth()
 	if sidebar > 0 && mouse.X < sidebar {
 		index := mouse.Y - sidebarProjectStart
-		switch {
-		case index >= 0 && index < len(m.tabs):
-			m.sidebarCursor = index
-			m.selectTab(index)
-		case index == len(m.tabs):
+		rows := m.sidebarRows()
+		if index < 0 || index >= len(rows) {
+			return
+		}
+		row := rows[index]
+		switch row.kind {
+		case sidebarProjectRow:
+			m.sidebarCursor = row.projectIndex
+			m.selectTab(row.projectIndex)
+		case sidebarAgentRow:
+			m.sidebarCursor = row.projectIndex
+			m.selectTab(row.projectIndex)
+			active := m.active()
+			if active == nil {
+				return
+			}
+			active.activePane = row.paneID
+			item := m.panes[row.paneID]
+			if item != nil && item.session != nil {
+				state, _ := item.session.State()
+				if state == terminal.Running {
+					m.mode = modeTerminal
+					m.focus = focusPanes
+				}
+			}
+			m.persist()
+		case sidebarNewProjectRow:
 			m.newProject()
 		}
 		return

@@ -54,6 +54,7 @@ func Run(root, statePath string) error {
 	peers := make(map[*runtimePeer]struct{})
 	var active *runtimePeer
 	lastFrame := time.Time{}
+	lastAgentScan := time.Time{}
 	dirty := false
 	ticker := time.NewTicker(time.Second / 60)
 	defer ticker.Stop()
@@ -185,11 +186,21 @@ func Run(root, statePath string) error {
 				dirty = true
 			}
 
-		case <-ticker.C:
+		case now := <-ticker.C:
+			if now.Sub(lastAgentScan) >= 250*time.Millisecond {
+				lastAgentScan = now
+				if model.RefreshAgents(now) {
+					dirty = true
+				}
+			}
 			if active == nil {
 				continue
 			}
-			if dirty || time.Since(lastFrame) >= time.Second {
+			frameInterval := time.Second
+			if model.HasAnimatingAgents() {
+				frameInterval = 80 * time.Millisecond
+			}
+			if dirty || now.Sub(lastFrame) >= frameInterval {
 				dirty = false
 				sendView(active, false)
 			}

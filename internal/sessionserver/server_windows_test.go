@@ -5,7 +5,9 @@ package sessionserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -76,6 +78,82 @@ func TestRuntimeKeepsTerminalAliveAcrossClientDetach(t *testing.T) {
 	}
 }
 
+func TestRuntimeDiscoversCodexAndTracksWorkingToDone(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	endpoint, err := Endpoint(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	helperPath := filepath.Join(t.TempDir(), "codex.exe")
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperBytes, err := os.ReadFile(testExecutable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(helperPath, helperBytes, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	serverResult := make(chan error, 1)
+	go func() { serverResult <- Run(root, statePath) }()
+	t.Cleanup(func() { _ = Stop(statePath) })
+
+	connection := dialTestRuntime(t, endpoint)
+	defer connection.Close()
+	encoder := json.NewEncoder(connection)
+	decoder := json.NewDecoder(connection)
+	sendTestRequest(t, encoder, request{Version: protocolVersion, Kind: requestAttach})
+	readTestFrame(t, connection, decoder, func(value frame) bool { return value.Version == protocolVersion })
+
+	sendTestRequest(t, encoder, request{Version: protocolVersion, Kind: requestResize, Width: 100, Height: 30})
+	readTestFrame(t, connection, decoder, func(value frame) bool { return value.Content != "" })
+	enter := tea.Key{Code: tea.KeyEnter}
+	sendTestRequest(t, encoder, request{Version: protocolVersion, Kind: requestKey, Key: &enter})
+	readTestFrame(t, connection, decoder, func(value frame) bool { return value.Content != "" })
+
+	command := fmt.Sprintf("$env:SPLIT_AGENT_TEST_HELPER='1'; & '%s' '-test.run=TestAgentProcessHelper'", helperPath)
+	sendTestRequest(t, encoder, request{Version: protocolVersion, Kind: requestPaste, Paste: command})
+	readTestFrame(t, connection, decoder, func(value frame) bool { return value.Content != "" })
+	sendTestRequest(t, encoder, request{Version: protocolVersion, Kind: requestKey, Key: &enter})
+	readTestFrame(t, connection, decoder, func(value frame) bool {
+		return strings.Contains(ansi.Strip(value.Content), "Codex · working")
+	})
+	escape := tea.Key{Code: tea.KeyEscape}
+	sendTestRequest(t, encoder, request{Version: protocolVersion, Kind: requestKey, Key: &escape})
+	readTestFrame(t, connection, decoder, func(value frame) bool {
+		return strings.Contains(ansi.Strip(value.Content), "\u00d7 Codex \u00b7 interrup")
+	})
+	readTestFrame(t, connection, decoder, func(value frame) bool {
+		return strings.Contains(ansi.Strip(value.Content), "✓ Codex · done")
+	})
+
+	if err := Stop(statePath); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-serverResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runtime did not stop after agent detection test")
+	}
+}
+
+func TestAgentProcessHelper(t *testing.T) {
+	if os.Getenv("SPLIT_AGENT_TEST_HELPER") != "1" {
+		return
+	}
+	fmt.Print("\x1b[2J\x1b[H• Working (1s • esc to interrupt)")
+	time.Sleep(3 * time.Second)
+	fmt.Print("\x1b[2J\x1b[H\x1b]2;Codex\x07› ready")
+	time.Sleep(8 * time.Second)
+}
 func dialTestRuntime(t *testing.T, endpoint string) net.Conn {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -109,6 +187,9 @@ func readTestFrame(t *testing.T, connection net.Conn, decoder *json.Decoder, acc
 	for time.Now().Before(deadline) {
 		var value frame
 		if err := decoder.Decode(&value); err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				break
+			}
 			t.Fatal(err)
 		}
 		lastContent = ansi.Strip(value.Content)

@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"split/internal/agent"
 	"split/internal/layout"
 	"split/internal/terminal"
 )
@@ -374,5 +375,116 @@ func TestPaneContextMenuEscapeRestoresTerminalMode(t *testing.T) {
 	}
 	if model.mode != modeTerminal {
 		t.Fatal("canceling the context menu should restore terminal-input mode")
+	}
+}
+
+func TestSidebarShowsOneLiveRowPerDetectedAgent(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+
+	_, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	firstPane := model.active().activePane
+	model.splitActive(layout.Columns)
+	secondPane := model.active().activePane
+	model.agents[firstPane] = agent.State{
+		PaneID: firstPane,
+		PID:    101,
+		Kind:   agent.KindCodex,
+		Status: agent.StatusWorking,
+	}
+	model.agents[secondPane] = agent.State{
+		PaneID: secondPane,
+		PID:    102,
+		Kind:   agent.KindClaude,
+		Status: agent.StatusBlocked,
+	}
+
+	plain := ansi.Strip(model.renderSidebar(sidebarWidth, 30))
+	if !strings.Contains(plain, "Codex · working") {
+		t.Fatalf("sidebar is missing the working Codex row: %q", plain)
+	}
+	if !strings.Contains(plain, "! Claude · blocked") {
+		t.Fatalf("sidebar is missing the blocked Claude row: %q", plain)
+	}
+
+	codex := model.agents[firstPane]
+	codex.Status = agent.StatusFinished
+	model.agents[firstPane] = codex
+	claude := model.agents[secondPane]
+	claude.Status = agent.StatusExited
+	model.agents[secondPane] = claude
+	plain = ansi.Strip(model.renderSidebar(sidebarWidth, 30))
+	if !strings.Contains(plain, "✓ Codex · done") {
+		t.Fatalf("sidebar is missing the completed Codex row: %q", plain)
+	}
+	if !strings.Contains(plain, "× Claude · exited") {
+		t.Fatalf("sidebar is missing the exited Claude row: %q", plain)
+	}
+}
+
+func TestTerminalInputMarksAgentWorkingAndInterrupted(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+
+	paneID := model.active().activePane
+	model.agents[paneID] = agent.State{
+		PaneID: paneID,
+		PID:    101,
+		Kind:   agent.KindClaude,
+		Status: agent.StatusIdle,
+	}
+	model.mode = modeTerminal
+
+	_, _ = model.handleKey(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if current := model.agents[paneID]; current.Status != agent.StatusWorking {
+		t.Fatalf("Enter should immediately mark a detected agent working: %#v", current)
+	}
+	_, _ = model.handleKey(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if current := model.agents[paneID]; current.Status != agent.StatusInterrupted {
+		t.Fatalf("Esc should immediately mark a working agent interrupted: %#v", current)
+	}
+
+	plain := ansi.Strip(model.renderSidebar(sidebarWidth, 30))
+	if !strings.Contains(plain, "× Claude · interrup") {
+		t.Fatalf("sidebar should show the red interruption marker: %q", plain)
+	}
+}
+
+func TestClickingSidebarAgentFocusesItsTerminal(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+
+	_, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	firstPane := model.active().activePane
+	model.splitActive(layout.Columns)
+	secondPane := model.active().activePane
+	model.active().activePane = firstPane
+	model.agents[secondPane] = agent.State{
+		PaneID: secondPane,
+		PID:    102,
+		Kind:   agent.KindClaude,
+		Status: agent.StatusIdle,
+	}
+
+	agentRow := -1
+	for index, row := range model.sidebarRows() {
+		if row.kind == sidebarAgentRow && row.paneID == secondPane {
+			agentRow = index
+			break
+		}
+	}
+	if agentRow < 0 {
+		t.Fatal("expected a sidebar row for the detected agent")
+	}
+	model.handleMouseClick(tea.Mouse{
+		X:      2,
+		Y:      sidebarProjectStart + agentRow,
+		Button: tea.MouseLeft,
+	})
+	if model.active().activePane != secondPane {
+		t.Fatalf("agent row focused %q, want %q", model.active().activePane, secondPane)
+	}
+	if model.mode != modeTerminal || model.focus != focusPanes {
+		t.Fatal("clicking an agent row should enter its live terminal")
 	}
 }
