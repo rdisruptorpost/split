@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	minimumSidebarWidth   = 16
+	minimumSidebarWidth   = sidebarBrandWidth + 2
 	maximumSidebarWidth   = 48
 	minimumWorkspaceWidth = 42
 )

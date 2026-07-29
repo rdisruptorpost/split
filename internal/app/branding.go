@@ -6,6 +6,8 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
+const sidebarBrandWidth = 21
+
 var sidebarBrandFrame = []string{
 	"                     ",
 	"██▀▀██▀████▀█▀█▀█▀█▀█",

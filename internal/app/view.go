@@ -115,11 +115,7 @@ func (m *Model) render() string {
 func (m *Model) renderSidebar(width, height int) string {
 	contentWidth := max(1, width-1)
 	lines := make([]string, 0, height)
-	brand := renderSidebarBrand()
-	if contentWidth < 22 {
-		brand = []string{styles.logo.Render("split"), "", "", ""}
-	}
-	for _, line := range brand {
+	for _, line := range renderSidebarBrand() {
 		lines = append(lines, " "+line)
 	}
 	lines = append(lines, " "+styles.eyebrow.Render("PROJECTS"))
@@ -290,7 +286,6 @@ func (m *Model) renderPane(item *pane, width, height int) string {
 
 	title := styles.paneTitle.Render(item.title)
 	if item.kind == paneTerminal {
-		title += " " + m.renderTerminalState(item)
 		if item.session != nil {
 			if offset := item.session.ScrollOffset(); offset > 0 {
 				title += " " + styles.muted.Render(fmt.Sprintf("↑%d", offset))
@@ -345,26 +340,6 @@ func (m *Model) renderTerminal(item *pane, width, height int) string {
 		return fitBlock(styles.muted.Render("Starting terminal…"), width, height)
 	}
 	return fitBlock(item.session.Render(), width, height)
-}
-
-func (m *Model) renderTerminalState(item *pane) string {
-	if item.err != nil {
-		return lipgloss.NewStyle().Foreground(palette.red).Render("failed")
-	}
-	if item.session == nil {
-		return styles.muted.Render("starting")
-	}
-	state, _ := item.session.State()
-	switch state {
-	case terminal.Running:
-		return lipgloss.NewStyle().Foreground(palette.green).Render("● live")
-	case terminal.Exited:
-		return styles.muted.Render("○ exited")
-	case terminal.Failed:
-		return lipgloss.NewStyle().Foreground(palette.red).Render("● failed")
-	default:
-		return lipgloss.NewStyle().Foreground(palette.yellow).Render("● starting")
-	}
 }
 
 func (m *Model) renderOverview(width, height int) string {

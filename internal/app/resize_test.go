@@ -100,21 +100,26 @@ func TestAltRightDragSidebarWidthPersists(t *testing.T) {
 	}
 }
 
-func TestNarrowSidebarUsesCompactBrand(t *testing.T) {
+func TestMinimumSidebarWidthFitsFullBrand(t *testing.T) {
 	model := New(t.TempDir())
 	defer model.Close()
 	_, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	model.sidebarSize = minimumSidebarWidth
 
-	plain := ansi.Strip(model.renderSidebar(model.effectiveSidebarWidth(), 30))
-	if !strings.Contains(plain, "split") {
-		t.Fatalf("narrow sidebar is missing compact branding: %q", plain)
+	if got := model.effectiveSidebarWidth(); got != sidebarBrandWidth+2 {
+		t.Fatalf("minimum sidebar width = %d, want %d", got, sidebarBrandWidth+2)
 	}
-	if strings.Contains(plain, sidebarBrandFrame[1]) {
-		t.Fatal("narrow sidebar should not crop the full graphical wordmark")
+	rendered := model.renderSidebar(model.effectiveSidebarWidth(), 30)
+	plain := ansi.Strip(rendered)
+	if !strings.Contains(plain, sidebarBrandFrame[1]) {
+		t.Fatalf("minimum-width sidebar cropped the full branding: %q", plain)
+	}
+	for row, line := range strings.Split(rendered, "\n") {
+		if got := ansi.StringWidth(line); got != minimumSidebarWidth {
+			t.Fatalf("sidebar row %d width = %d, want %d", row, got, minimumSidebarWidth)
+		}
 	}
 }
-
 func TestResizeGestureFinishesWhenRightButtonStateIsLost(t *testing.T) {
 	model := New(t.TempDir())
 	defer model.Close()
@@ -135,5 +140,20 @@ func TestResizeGestureFinishesWhenRightButtonStateIsLost(t *testing.T) {
 	_, _ = model.Update(tea.MouseMotionMsg(lostRelease))
 	if model.resizeGesture.active {
 		t.Fatal("buttonless motion should finish a stale resize gesture")
+	}
+}
+
+func TestPaneTitleOmitsRedundantLiveState(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+	_, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	frame := ansi.Strip(model.renderPane(model.activePane(), 70, 12))
+	title := strings.Split(frame, "\n")[0]
+	if !strings.Contains(title, "PowerShell") {
+		t.Fatalf("pane title is missing its name: %q", title)
+	}
+	if strings.Contains(strings.ToLower(title), "live") {
+		t.Fatalf("pane title still repeats runtime liveness: %q", title)
 	}
 }
