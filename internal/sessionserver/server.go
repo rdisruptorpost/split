@@ -57,6 +57,7 @@ func Run(root, statePath string) error {
 	lastFrame := time.Time{}
 	lastAgentScan := time.Time{}
 	dirty := false
+	var pendingClipboard *string
 	ticker := time.NewTicker(time.Second / 60)
 	defer ticker.Stop()
 
@@ -72,6 +73,7 @@ func Run(root, statePath string) error {
 		_ = peer.connection.Close()
 		if active == peer {
 			active = nil
+			pendingClipboard = nil
 			model.ClientDetached()
 		}
 	}
@@ -92,7 +94,12 @@ func Run(root, statePath string) error {
 	sendView := func(peer *runtimePeer, detach bool) bool {
 		value := frameFromView(model.View())
 		value.Detach = detach
+		if pendingClipboard != nil {
+			clipboard := *pendingClipboard
+			value.Clipboard = &clipboard
+		}
 		if send(peer, value) {
+			pendingClipboard = nil
 			lastFrame = time.Now()
 			return true
 		}
@@ -158,6 +165,9 @@ func Run(root, statePath string) error {
 					continue
 				}
 				_, _ = model.Update(message)
+				if clipboard, ok := model.TakeClipboardRequest(); ok {
+					pendingClipboard = &clipboard
+				}
 				if model.TakeDetachRequest() {
 					peer := active
 					sendView(peer, true)

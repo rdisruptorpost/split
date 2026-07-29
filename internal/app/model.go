@@ -83,10 +83,13 @@ type Model struct {
 	events chan terminal.Event
 	notice string
 
-	contextMenu     paneContextMenuState
-	projectMenu     projectContextMenuState
-	renameDialog    projectRenameState
-	detachRequested bool
+	contextMenu      paneContextMenuState
+	projectMenu      projectContextMenuState
+	renameDialog     projectRenameState
+	selectionGesture terminalSelectionGesture
+	clipboardText    string
+	clipboardPending bool
+	detachRequested  bool
 
 	store *state.Store
 }
@@ -382,6 +385,9 @@ func (m *Model) closeProject(projectIndex int) bool {
 }
 
 func (m *Model) closePane(paneID string) {
+	if m.selectionGesture.paneID == paneID {
+		m.selectionGesture = terminalSelectionGesture{}
+	}
 	if item := m.panes[paneID]; item != nil && item.session != nil {
 		item.session.Close()
 	}
@@ -578,6 +584,9 @@ func (m *Model) TakeDetachRequest() bool {
 
 // ClientDetached closes transient UI state without closing any terminal.
 func (m *Model) ClientDetached() {
+	m.clearTerminalSelection()
+	m.clipboardText = ""
+	m.clipboardPending = false
 	m.contextMenu = paneContextMenuState{}
 	m.projectMenu = projectContextMenuState{}
 	m.renameDialog = projectRenameState{}

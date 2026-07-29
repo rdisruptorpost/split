@@ -12,6 +12,7 @@ import (
 func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case tea.WindowSizeMsg:
+		m.clearTerminalSelection()
 		m.width = max(1, message.Width)
 		m.height = max(1, message.Height)
 		m.resizeActivePanes()
@@ -26,6 +27,7 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.insertProjectRenameText(message.Content)
 		} else if m.mode == modeTerminal && !m.contextMenu.open {
 			if item := m.activePane(); item != nil && item.session != nil {
+				m.clearTerminalSelection()
 				item.session.Paste(message.Content)
 			}
 		}
@@ -43,6 +45,12 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case tea.MouseReleaseMsg:
+		if !m.renameDialog.open && !m.projectMenu.open && !m.contextMenu.open {
+			m.handleTerminalSelectionRelease(message.Mouse())
+		}
+		return m, nil
+
 	case tea.MouseWheelMsg:
 		if !m.renameDialog.open && !m.projectMenu.open && !m.contextMenu.open {
 			m.handleMouseWheel(message.Mouse())
@@ -56,6 +64,8 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.handleProjectContextMenuMotion(message.Mouse())
 		} else if m.contextMenu.open {
 			m.handlePaneContextMenuMotion(message.Mouse())
+		} else {
+			m.handleTerminalSelectionMotion(message.Mouse())
 		}
 		return m, nil
 
@@ -78,12 +88,19 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) handleKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case modeTerminal:
+		if message.String() == "ctrl+c" {
+			if item := m.activePane(); item != nil && m.copyPaneSelection(item.id) {
+				return m, nil
+			}
+		}
 		if message.String() == "ctrl+b" {
+			m.clearTerminalSelection()
 			m.modeBeforePrefix = modeTerminal
 			m.mode = modePrefix
 			return m, nil
 		}
 		if item := m.activePane(); item != nil && item.session != nil {
+			m.clearTerminalSelection()
 			switch message.String() {
 			case "enter":
 				m.markAgentSubmitted(item.id, time.Now())
@@ -228,6 +245,7 @@ func (m *Model) handleMouseClick(mouse tea.Mouse) {
 		if mouse.Button != tea.MouseLeft && mouse.Button != tea.MouseRight {
 			return
 		}
+		m.clearTerminalSelection()
 		m.focusSidebarNavigation(m.activeTab)
 		m.notice = ""
 		row, hasRow := m.sidebarRowAt(mouse.Y)
@@ -270,10 +288,15 @@ func (m *Model) handleMouseClick(mouse tea.Mouse) {
 		}
 		for paneID, rect := range active.root.Rects(m.workspaceRect()) {
 			if rect.Contains(mouse.X, mouse.Y) {
+				if m.copyPaneSelection(paneID) {
+					return
+				}
+				m.clearTerminalSelection()
 				m.openPaneContextMenu(mouse.X, mouse.Y, paneID)
 				return
 			}
 		}
+		m.clearTerminalSelection()
 		return
 	}
 	if mouse.Button != tea.MouseLeft {
@@ -281,6 +304,7 @@ func (m *Model) handleMouseClick(mouse tea.Mouse) {
 	}
 
 	if !m.workspaceRect().Contains(mouse.X, mouse.Y) {
+		m.clearTerminalSelection()
 		return
 	}
 	active := m.active()
@@ -300,15 +324,18 @@ func (m *Model) handleMouseClick(mouse tea.Mouse) {
 			state, _ := item.session.State()
 			if state == terminal.Running {
 				m.mode = modeTerminal
+				m.beginTerminalSelection(paneID, rect, mouse)
 				m.persist()
 				return
 			}
 			m.notice = "This terminal is not running"
 		}
+		m.clearTerminalSelection()
 		m.mode = modeNavigate
 		m.persist()
 		return
 	}
+	m.clearTerminalSelection()
 }
 
 const terminalWheelLines = 3
@@ -320,6 +347,7 @@ func (m *Model) handleMouseWheel(mouse tea.Mouse) {
 	if mouse.X < m.effectiveSidebarWidth() || !m.workspaceRect().Contains(mouse.X, mouse.Y) {
 		return
 	}
+	m.clearTerminalSelection()
 	active := m.active()
 	if active == nil {
 		return

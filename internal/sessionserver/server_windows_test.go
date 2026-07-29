@@ -145,6 +145,81 @@ func TestRuntimeDiscoversCodexAndTracksWorkingToDone(t *testing.T) {
 	}
 }
 
+func TestRuntimeDeliversMouseSelectionClipboard(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	endpoint, err := Endpoint(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	serverResult := make(chan error, 1)
+	go func() { serverResult <- Run(root, statePath) }()
+	t.Cleanup(func() { _ = Stop(statePath) })
+
+	connection := dialTestRuntime(t, endpoint)
+	defer connection.Close()
+	encoder := json.NewEncoder(connection)
+	decoder := json.NewDecoder(connection)
+	sendTestRequest(t, encoder, request{Version: protocolVersion, Kind: requestAttach})
+	readTestFrame(t, connection, decoder, func(value frame) bool {
+		return value.Version == protocolVersion
+	})
+
+	sendTestRequest(t, encoder, request{
+		Version: protocolVersion,
+		Kind:    requestResize,
+		Width:   100,
+		Height:  30,
+	})
+	readTestFrame(t, connection, decoder, func(value frame) bool { return value.Content != "" })
+	enter := tea.Key{Code: tea.KeyEnter}
+	sendTestRequest(t, encoder, request{Version: protocolVersion, Kind: requestKey, Key: &enter})
+	readTestFrame(t, connection, decoder, func(value frame) bool { return value.Content != "" })
+
+	const marker = "__SPLIT_RUNTIME_CLIPBOARD_OK__"
+	sendTestRequest(t, encoder, request{Version: protocolVersion, Kind: requestPaste, Paste: "Write-Output " + marker})
+	sendTestRequest(t, encoder, request{Version: protocolVersion, Kind: requestKey, Key: &enter})
+	output := readTestFrame(t, connection, decoder, func(value frame) bool {
+		return strings.Count(ansi.Strip(value.Content), marker) >= 2
+	})
+
+	row, column := -1, -1
+	for lineIndex, line := range strings.Split(ansi.Strip(output.Content), "\n") {
+		if markerIndex := strings.LastIndex(line, marker); markerIndex >= 0 {
+			row = lineIndex
+			column = ansi.StringWidth(line[:markerIndex])
+		}
+	}
+	if row < 0 || column < 0 {
+		t.Fatalf("could not locate marker in runtime frame: %q", ansi.Strip(output.Content))
+	}
+	start := tea.Mouse{X: column, Y: row, Button: tea.MouseLeft}
+	end := tea.Mouse{X: column + len(marker) - 1, Y: row, Button: tea.MouseLeft}
+	sendTestRequest(t, encoder, request{Version: protocolVersion, Kind: requestClick, Mouse: &start})
+	sendTestRequest(t, encoder, request{Version: protocolVersion, Kind: requestMotion, Mouse: &end})
+	sendTestRequest(t, encoder, request{Version: protocolVersion, Kind: requestRelease, Mouse: &end})
+	copyKey := tea.Key{Code: 'c', Mod: tea.ModCtrl}
+	sendTestRequest(t, encoder, request{Version: protocolVersion, Kind: requestKey, Key: &copyKey})
+	copied := readTestFrame(t, connection, decoder, func(value frame) bool {
+		return value.Clipboard != nil
+	})
+	if copied.Clipboard == nil || *copied.Clipboard != marker {
+		t.Fatalf("runtime clipboard = %#v, want %q", copied.Clipboard, marker)
+	}
+
+	if err := Stop(statePath); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-serverResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runtime did not stop after clipboard test")
+	}
+}
 func TestRuntimeCoalescesRapidWheelFrames(t *testing.T) {
 	root := t.TempDir()
 	statePath := filepath.Join(t.TempDir(), "state.db")

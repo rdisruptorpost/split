@@ -62,6 +62,31 @@ func TestMouseWheelRequestJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMouseReleaseRequestJSONRoundTrip(t *testing.T) {
+	originalMouse := tea.Mouse{
+		X: 31, Y: 9, Button: tea.MouseLeft, Mod: tea.ModShift,
+	}
+	original, ok := requestForMessage(tea.MouseReleaseMsg(originalMouse))
+	if !ok || original.Kind != requestRelease {
+		t.Fatalf("mouse release message was not accepted: %#v", original)
+	}
+	encoded, err := json.Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded request
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	message, err := decoded.message()
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseMessage, ok := message.(tea.MouseReleaseMsg)
+	if !ok || !reflect.DeepEqual(releaseMessage.Mouse(), originalMouse) {
+		t.Fatalf("mouse release changed across protocol: %#v", message)
+	}
+}
 func TestClientFrameMailboxKeepsOnlyLatest(t *testing.T) {
 	client := &Client{frames: make(chan frameResult, 1)}
 	client.queueFrame(frameResult{frame: frame{Content: "stale"}})
@@ -77,6 +102,39 @@ func TestClientFrameMailboxKeepsOnlyLatest(t *testing.T) {
 	}
 }
 
+func TestClientFrameMailboxPreservesClipboardFromReplacedFrame(t *testing.T) {
+	client := &Client{frames: make(chan frameResult, 1)}
+	clipboard := "selected terminal text"
+	client.queueFrame(frameResult{frame: frame{Content: "stale", Clipboard: &clipboard}})
+	client.queueFrame(frameResult{frame: frame{Content: "latest"}})
+
+	select {
+	case result := <-client.frames:
+		if result.err != nil || result.frame.Content != "latest" {
+			t.Fatalf("mailbox kept the wrong visual frame: %#v", result)
+		}
+		if result.frame.Clipboard == nil || *result.frame.Clipboard != clipboard {
+			t.Fatalf("mailbox dropped clipboard side effect: %#v", result.frame.Clipboard)
+		}
+	default:
+		t.Fatal("mailbox did not retain a frame")
+	}
+}
+
+func TestClipboardFrameJSONRoundTripPreservesEmptySelection(t *testing.T) {
+	clipboard := ""
+	encoded, err := json.Marshal(frame{Version: protocolVersion, Clipboard: &clipboard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded frame
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Clipboard == nil || *decoded.Clipboard != "" {
+		t.Fatalf("empty clipboard selection was lost: %#v", decoded.Clipboard)
+	}
+}
 func TestViewFrameRoundTripPreservesCursorAndModes(t *testing.T) {
 	original := tea.NewView("\x1b[31mSplit\x1b[0m")
 	original.BackgroundColor = color.RGBA{R: 12, G: 13, B: 14, A: 255}

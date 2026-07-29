@@ -7,19 +7,20 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-const protocolVersion = 1
+const protocolVersion = 2
 
 type requestKind string
 
 const (
-	requestAttach requestKind = "attach"
-	requestStop   requestKind = "stop"
-	requestResize requestKind = "resize"
-	requestKey    requestKind = "key"
-	requestPaste  requestKind = "paste"
-	requestClick  requestKind = "mouse_click"
-	requestWheel  requestKind = "mouse_wheel"
-	requestMotion requestKind = "mouse_motion"
+	requestAttach  requestKind = "attach"
+	requestStop    requestKind = "stop"
+	requestResize  requestKind = "resize"
+	requestKey     requestKind = "key"
+	requestPaste   requestKind = "paste"
+	requestClick   requestKind = "mouse_click"
+	requestRelease requestKind = "mouse_release"
+	requestWheel   requestKind = "mouse_wheel"
+	requestMotion  requestKind = "mouse_motion"
 )
 
 type request struct {
@@ -59,6 +60,7 @@ type frame struct {
 	ReportFocus      bool        `json:"report_focus"`
 	MouseMode        int         `json:"mouse_mode"`
 	DisablePasteMode bool        `json:"disable_paste_mode"`
+	Clipboard        *string     `json:"clipboard,omitempty"`
 	Detach           bool        `json:"detach,omitempty"`
 	Stopped          bool        `json:"stopped,omitempty"`
 	Error            string      `json:"error,omitempty"`
@@ -81,6 +83,10 @@ func requestForMessage(message tea.Msg) (request, bool) {
 	case tea.MouseClickMsg:
 		mouse := message.Mouse()
 		result.Kind = requestClick
+		result.Mouse = &mouse
+	case tea.MouseReleaseMsg:
+		mouse := message.Mouse()
+		result.Kind = requestRelease
 		result.Mouse = &mouse
 	case tea.MouseWheelMsg:
 		mouse := message.Mouse()
@@ -115,6 +121,11 @@ func (r request) message() (tea.Msg, error) {
 			return nil, errors.New("mouse click request is missing its coordinates")
 		}
 		return tea.MouseClickMsg(*r.Mouse), nil
+	case requestRelease:
+		if r.Mouse == nil {
+			return nil, errors.New("mouse release request is missing its coordinates")
+		}
+		return tea.MouseReleaseMsg(*r.Mouse), nil
 	case requestWheel:
 		if r.Mouse == nil {
 			return nil, errors.New("mouse wheel request is missing its coordinates")

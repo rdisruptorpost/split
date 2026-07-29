@@ -63,6 +63,7 @@ func (c *Client) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			c.stateMu.Unlock()
 			return c, tea.Quit
 		}
+		clipboard := message.frame.Clipboard
 		c.stateMu.Lock()
 		c.current = message.frame
 		if message.frame.Detach {
@@ -77,7 +78,11 @@ func (c *Client) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if detach || failed {
 			return c, tea.Quit
 		}
-		return c, waitForFrame(c.frames)
+		nextFrame := waitForFrame(c.frames)
+		if clipboard != nil {
+			return c, tea.Batch(tea.SetClipboard(*clipboard), nextFrame)
+		}
+		return c, nextFrame
 	}
 
 	request, ok := requestForMessage(message)
@@ -154,10 +159,19 @@ func (c *Client) queueFrame(next frameResult) {
 		}
 
 		select {
-		case <-c.frames:
+		case stale := <-c.frames:
+			next = mergeFrameSideEffects(stale, next)
 		default:
 		}
 	}
+}
+
+func mergeFrameSideEffects(stale, next frameResult) frameResult {
+	if stale.err == nil && stale.frame.Clipboard != nil && next.err == nil && next.frame.Clipboard == nil {
+		clipboard := *stale.frame.Clipboard
+		next.frame.Clipboard = &clipboard
+	}
+	return next
 }
 
 func waitForFrame(frames <-chan frameResult) tea.Cmd {

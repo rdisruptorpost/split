@@ -362,6 +362,87 @@ func TestModelForwardsPasteAndEnterToPowerShell(t *testing.T) {
 		}
 	}
 }
+func TestMouseSelectionCopiesWithControlCAndRightClick(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+	_, _ = model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+
+	const marker = "__SPLIT_MOUSE_SELECTION_OK__"
+	_, _ = model.Update(tea.PasteMsg{Content: "Write-Output " + marker})
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+
+	item := model.activePane()
+	if item == nil || item.session == nil {
+		t.Fatal("active PowerShell session is unavailable")
+	}
+	markerRow, markerColumn := -1, -1
+	deadline := time.After(10 * time.Second)
+	for markerRow < 0 {
+		plain := ansi.Strip(item.session.Render())
+		if strings.Count(plain, marker) >= 2 {
+			for row, line := range strings.Split(plain, "\n") {
+				if column := strings.LastIndex(line, marker); column >= 0 {
+					markerRow, markerColumn = row, column
+				}
+			}
+		}
+		if markerRow >= 0 {
+			break
+		}
+		select {
+		case event := <-model.TerminalEvents():
+			model.ApplyTerminalEvents([]terminal.Event{event})
+		case <-deadline:
+			t.Fatalf("PowerShell did not render selectable marker: %q", plain)
+		}
+	}
+
+	rect := model.active().root.Rects(model.workspaceRect())[item.id]
+	inner, ok := paneInnerRect(rect)
+	if !ok || markerColumn+len(marker) > inner.Width || markerRow >= inner.Height {
+		t.Fatalf("marker is outside pane body: rect=%#v row=%d column=%d", inner, markerRow, markerColumn)
+	}
+	start := tea.Mouse{X: inner.X + markerColumn, Y: inner.Y + markerRow, Button: tea.MouseLeft}
+	end := tea.Mouse{X: start.X + len(marker) - 1, Y: start.Y, Button: tea.MouseLeft}
+	selectMarker := func() {
+		_, _ = model.Update(tea.MouseClickMsg(start))
+		_, _ = model.Update(tea.MouseMotionMsg(end))
+		_, _ = model.Update(tea.MouseReleaseMsg(end))
+		if got, selected := item.session.SelectedText(); !selected || got != marker {
+			t.Fatalf("mouse selected %q, %v; want %q, true", got, selected, marker)
+		}
+		if model.View().Cursor != nil {
+			t.Fatal("selected text should hide the terminal cursor")
+		}
+	}
+
+	selectMarker()
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'c', Mod: tea.ModCtrl}))
+	if copied, ok := model.TakeClipboardRequest(); !ok || copied != marker {
+		t.Fatalf("Ctrl+C clipboard request = %q, %v; want %q, true", copied, ok, marker)
+	}
+	if _, ok := model.TakeClipboardRequest(); ok {
+		t.Fatal("clipboard requests should be consumed exactly once")
+	}
+	if item.session.HasSelection() {
+		t.Fatal("copying should clear the terminal selection")
+	}
+
+	selectMarker()
+	_, _ = model.Update(tea.MouseClickMsg(tea.Mouse{X: end.X, Y: end.Y, Button: tea.MouseRight}))
+	if model.contextMenu.open {
+		t.Fatal("right-clicking a selection should copy instead of opening the pane menu")
+	}
+	if copied, ok := model.TakeClipboardRequest(); !ok || copied != marker {
+		t.Fatalf("right-click clipboard request = %q, %v; want %q, true", copied, ok, marker)
+	}
+
+	_, _ = model.Update(tea.MouseClickMsg(tea.Mouse{X: end.X, Y: end.Y, Button: tea.MouseRight}))
+	if !model.contextMenu.open {
+		t.Fatal("right-click without a selection should retain the pane context menu")
+	}
+}
 func TestPrefixCreatesPlainTerminalPaneAndQuitDetaches(t *testing.T) {
 	model := New(t.TempDir())
 	defer model.Close()

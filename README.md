@@ -11,7 +11,7 @@ Every pane is an ordinary PowerShell terminal. Split does not special-case launc
 - nested Codex and Claude rows with loading/working spinners, blocked alerts, completion ticks, interrupted turns, idle markers, and exited markers;
 - recursive split-tree layouts with movement, closing, and automatic balancing;
 - keyboard prefix controls plus a hoverable right-click pane menu;
-- one-click mouse focus plus per-pane mouse-wheel scrollback;
+- one-click mouse focus, left-drag terminal selection with clipboard copy, and per-pane mouse-wheel scrollback;
 - real PowerShell processes hosted through Windows ConPTY;
 - headless terminal emulation with 5,000 lines of styled history, complete printable-key forwarding, and a native blinking cursor through Charm's `x/vt` package;
 - SQLite persistence for project order, names, roots, pane working directories, focus, and complete split geometry;
@@ -69,16 +69,20 @@ Split starts in navigation mode.
 | `Tab` | Move focus between panes and the project sidebar |
 | `Enter` | Enter the focused terminal |
 | Mouse click | Focus a terminal and immediately enter input mode |
+| Left-drag terminal text | Select text in the live screen or scrolled history |
+| `Ctrl+C` in a terminal | Copy the active selection; without a selection, send the normal interrupt to PowerShell/Codex/Claude |
+| Right-click selected terminal | Copy the selection to the system clipboard |
+| `Ctrl+V` / terminal paste | Paste through the ConPTY, including bracketed-paste mode when requested by the child app |
 | Mouse wheel | Scroll the terminal under the pointer; mouse-aware full-screen TUIs receive the wheel event |
 | Click anywhere in sidebar | Leave terminal-input mode and focus project navigation; `q` now detaches |
 | Click an agent row | Select its project and pane while keeping keyboard focus in the sidebar |
 | Right-click project | Open project actions for Rename project or Close project |
-| Right-click pane | Open pane actions, including Rename terminal |
+| Right-click pane without a selection | Open pane actions, including Rename terminal |
 | `[` / `]` | Previous or next project |
 | `q` or `Ctrl+C` | Detach the UI while in navigation mode |
 | `Ctrl+B` | Open the one-shot command prefix |
 
-Mouse-wheel history is independent for every pane. The pane title shows the number of lines above the live bottom, the live cursor is hidden while inspecting history, and typing or pasting snaps back to current output. The pane right-click menu renames the terminal, creates a PowerShell split to the right or below, creates a new project, moves the focused pane, balances the layout, or closes the pane. A custom terminal name replaces the pane-frame title and its detected Codex or Claude label in the project sidebar while preserving live agent status. The project right-click menu renames a project or closes all of its panes and removes it; Close project is disabled for the final remaining project. Hover selects a row and left-click activates it.
+Mouse-wheel history is independent for every pane. The pane title shows the number of lines above the live bottom, the live cursor is hidden while inspecting history, and typing or pasting snaps back to current output. Selection coordinates follow terminal history rather than screen pixels, so text copied after scrolling is the text that was actually highlighted. A normal click, key, paste, wheel event, resize, or completed copy clears the selection. The pane right-click menu renames the terminal, creates a PowerShell split to the right or below, creates a new project, moves the focused pane, balances the layout, or closes the pane. A custom terminal name replaces the pane-frame title and its detected Codex or Claude label in the project sidebar while preserving live agent status. The project right-click menu renames a project or closes all of its panes and removes it; Close project is disabled for the final remaining project. Hover selects a row and left-click activates it.
 
 Prefix commands:
 
@@ -100,6 +104,6 @@ New projects and splits always start as PowerShell terminals at the current proj
 
 ## Architecture
 
-The hidden runtime owns the real `app.Model`, SQLite store, terminal emulators, ConPTY handles, child processes, and agent monitor. The monitor walks each PowerShell descendant tree and combines the recognized process with live bottom-of-screen and OSC-title signals; it never launches or resumes the provider itself. The visible Bubble Tea client only forwards resize, key, paste, and mouse messages and renders versioned frames received over the local named pipe. Disconnecting a client resets transient menus and focus state but does not close a terminal. An explicit stop persists the model, closes every ConPTY, and exits the runtime before acknowledging the command.
+The hidden runtime owns the real `app.Model`, SQLite store, terminal emulators, ConPTY handles, child processes, and agent monitor. The monitor walks each PowerShell descendant tree and combines the recognized process with live bottom-of-screen and OSC-title signals; it never launches or resumes the provider itself. The visible Bubble Tea client forwards resize, key, paste, and mouse messages, renders versioned frames received over the local named pipe, and applies one-shot clipboard requests in the user-facing terminal. Disconnecting a client resets transient menus and focus state but does not close a terminal. An explicit stop persists the model, closes every ConPTY, and exits the runtime before acknowledging the command.
 
 This terminal-first boundary keeps Split provider-agnostic while leaving room for future structured integrations, such as a native Codex app-server pane, without making ordinary terminal workflows depend on them.

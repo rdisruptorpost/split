@@ -119,6 +119,95 @@ func TestSessionRapidScrollClampsAcrossLongHistory(t *testing.T) {
 	}
 }
 
+func TestSessionSelectionRendersAndExtractsText(t *testing.T) {
+	emulator := vt.NewEmulator(16, 3)
+	defer emulator.Close()
+	session := &Session{
+		emulator:    emulator,
+		cursorShown: true,
+		cursorBlink: true,
+		mouseModes:  make(map[int]struct{}),
+	}
+
+	if _, err := emulator.WriteString("alpha beta\r\nsecond line"); err != nil {
+		t.Fatal(err)
+	}
+	live := session.Render()
+	if !session.Cursor().Visible {
+		t.Fatal("cursor should begin visible")
+	}
+	if !session.BeginSelection(5, 1) || !session.UpdateSelection(6, 0) || !session.EndSelection(6, 0) {
+		t.Fatal("reverse drag should create a visible selection")
+	}
+	if got, ok := session.SelectedText(); !ok || got != "beta\nsecond" {
+		t.Fatalf("selected text = %q, %v; want %q, true", got, ok, "beta\nsecond")
+	}
+	selected := session.Render()
+	plainSelected := ansi.Strip(selected)
+	if !strings.Contains(plainSelected, "alpha beta") || !strings.Contains(plainSelected, "second line") {
+		t.Fatalf("selection styling lost terminal text: %q", plainSelected)
+	}
+	if selected == live {
+		t.Fatal("visible selection should add highlight styling")
+	}
+	if session.Cursor().Visible {
+		t.Fatal("terminal cursor should be hidden while text is selected")
+	}
+
+	session.ClearSelection()
+	if session.HasSelection() {
+		t.Fatal("ClearSelection should remove the selection")
+	}
+	if !session.Cursor().Visible {
+		t.Fatal("cursor should return after clearing the selection")
+	}
+	if !session.BeginSelection(2, 0) || session.EndSelection(2, 0) || session.HasSelection() {
+		t.Fatal("a click without a drag should not leave a selection")
+	}
+}
+
+func TestSessionSelectionSnapsWideCharacterContinuation(t *testing.T) {
+	emulator := vt.NewEmulator(8, 2)
+	defer emulator.Close()
+	session := &Session{emulator: emulator, mouseModes: make(map[int]struct{})}
+
+	if _, err := emulator.WriteString("A\u754cB"); err != nil {
+		t.Fatal(err)
+	}
+	// Column 2 is the continuation cell for the two-column glyph at column 1.
+	if !session.BeginSelection(2, 0) || !session.UpdateSelection(3, 0) || !session.EndSelection(3, 0) {
+		t.Fatal("drag from a wide-character continuation should remain selectable")
+	}
+	if got, ok := session.SelectedText(); !ok || got != "\u754cB" {
+		t.Fatalf("wide-character selected text = %q, %v; want %q, true", got, ok, "\u754cB")
+	}
+}
+func TestSessionSelectionUsesScrolledHistoryCoordinates(t *testing.T) {
+	emulator := vt.NewEmulator(12, 3)
+	emulator.SetScrollbackSize(50)
+	defer emulator.Close()
+	session := &Session{
+		emulator:    emulator,
+		cursorShown: true,
+		mouseModes:  make(map[int]struct{}),
+	}
+
+	if _, err := emulator.WriteString("one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix"); err != nil {
+		t.Fatal(err)
+	}
+	if !session.HandleWheel(0, 0, tea.MouseWheelUp, 0, 100) {
+		t.Fatal("expected to scroll into history")
+	}
+	if !strings.HasPrefix(ansi.Strip(session.Render()), "one") {
+		t.Fatalf("top historical viewport is unexpected: %q", ansi.Strip(session.Render()))
+	}
+	if !session.BeginSelection(0, 0) || !session.UpdateSelection(2, 0) || !session.EndSelection(2, 0) {
+		t.Fatal("historical row should be selectable")
+	}
+	if got, ok := session.SelectedText(); !ok || got != "one" {
+		t.Fatalf("historical selected text = %q, %v; want one, true", got, ok)
+	}
+}
 func TestSessionForwardsPrintableShiftAndLockState(t *testing.T) {
 	tests := []struct {
 		name string

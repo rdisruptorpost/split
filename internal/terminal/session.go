@@ -84,6 +84,7 @@ type Session struct {
 	cursorBlink     bool
 	cursorStyle     vt.CursorStyle
 	scrollOffset    int
+	selection       terminalSelection
 	mouseModes      map[int]struct{}
 	alternateScroll bool
 	outputFilter    outputFilter
@@ -136,6 +137,7 @@ func Start(id string, command Command, width, height int, events chan<- Event) (
 		},
 		AltScreen: func(bool) {
 			session.scrollOffset = 0
+			session.selection = terminalSelection{}
 		},
 		EnableMode: func(mode ansi.Mode) {
 			session.setTerminalMode(mode, true)
@@ -284,46 +286,11 @@ func (s *Session) LiveRender() string {
 func (s *Session) Render() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.scrollOffset <= 0 || s.emulator.IsAltScreen() {
+	if s.scrollOffset <= 0 && !s.selection.visible {
 		return s.emulator.Render()
 	}
-	return renderScrollbackViewport(s.emulator, s.scrollOffset)
+	return renderTerminalViewport(s.emulator, s.scrollOffset, &s.selection)
 }
-
-func renderScrollbackViewport(emulator *vt.Emulator, offset int) string {
-	width := emulator.Width()
-	height := emulator.Height()
-	scrollback := emulator.Scrollback()
-	scrollbackLength := emulator.ScrollbackLen()
-	offset = max(0, min(offset, scrollbackLength))
-	end := scrollbackLength + height - offset
-	start := end - height
-	lines := make(uv.Lines, height)
-
-	for row := range height {
-		line := uv.NewLine(width)
-		position := start + row
-		switch {
-		case position < 0:
-		case position < scrollbackLength:
-			if scrollback != nil {
-				copy(line, scrollback.Line(position))
-			}
-		default:
-			screenRow := position - scrollbackLength
-			if screenRow >= 0 && screenRow < height {
-				for column := range width {
-					if cell := emulator.CellAt(column, screenRow); cell != nil {
-						line[column] = *cell
-					}
-				}
-			}
-		}
-		lines[row] = line
-	}
-	return lines.Render()
-}
-
 func (s *Session) ScrollOffset() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -337,7 +304,7 @@ func (s *Session) Cursor() Cursor {
 	return Cursor{
 		X:       position.X,
 		Y:       position.Y,
-		Visible: s.cursorShown && s.scrollOffset == 0,
+		Visible: s.cursorShown && s.scrollOffset == 0 && !s.selection.visible,
 		Blink:   s.cursorBlink,
 		Style:   s.cursorStyle,
 		Color:   s.emulator.CursorColor(),
@@ -349,6 +316,7 @@ func (s *Session) Resize(width, height int) error {
 	height = max(1, height)
 
 	s.mu.Lock()
+	s.selection = terminalSelection{}
 	previousScrollback := s.emulator.ScrollbackLen()
 	s.emulator.Resize(width, height)
 	currentScrollback := s.emulator.ScrollbackLen()
@@ -365,6 +333,7 @@ func (s *Session) SendKey(message tea.KeyPressMsg) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.scrollOffset = 0
+	s.selection = terminalSelection{}
 	if text, ok := printableKeyText(key); ok {
 		s.emulator.SendText(text)
 		return
@@ -408,6 +377,7 @@ func printableKeyText(key tea.Key) (string, bool) {
 func (s *Session) Paste(content string) {
 	s.mu.Lock()
 	s.scrollOffset = 0
+	s.selection = terminalSelection{}
 	s.emulator.Paste(content)
 	s.mu.Unlock()
 }
@@ -419,6 +389,7 @@ func (s *Session) HandleWheel(x, y int, button tea.MouseButton, mod tea.KeyMod, 
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.selection = terminalSelection{}
 	x = max(0, min(x, s.emulator.Width()-1))
 	y = max(0, min(y, s.emulator.Height()-1))
 
