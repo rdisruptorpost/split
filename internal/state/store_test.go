@@ -20,7 +20,7 @@ func TestStoreRoundTripPreservesWorkspaceMetadata(t *testing.T) {
 	defer store.Close()
 
 	snapshot := Snapshot{
-		ActiveProjectID: "project-b", SidebarVisible: false, NextProjectNumber: 7,
+		ActiveProjectID: "project-b", SidebarVisible: false, SidebarWidth: 37, NextProjectNumber: 7,
 		Projects: []Project{
 			{
 				ID: "project-a", Name: "alpha", RootPath: `C:\work\alpha`, ActivePaneID: "pane-a",

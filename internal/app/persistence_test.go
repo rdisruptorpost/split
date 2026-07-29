@@ -33,6 +33,7 @@ func TestPersistentModelRestoresProjectOrderNamesAndPaneLayouts(t *testing.T) {
 	model.activeTab = 1
 	model.sidebarCursor = 1
 	model.sidebarVisible = false
+	model.sidebarSize = 39
 	model.tabs[1].activePane = model.tabs[1].root.Leaves()[0]
 	model.persist()
 
@@ -59,6 +60,9 @@ func TestPersistentModelRestoresProjectOrderNamesAndPaneLayouts(t *testing.T) {
 	}
 	if restored.sidebarVisible {
 		t.Fatal("sidebar visibility was not restored")
+	}
+	if restored.sidebarSize != 39 {
+		t.Fatalf("sidebar width was restored as %d, want 39", restored.sidebarSize)
 	}
 	if got := len(restored.tabs[1].root.Leaves()); got != 3 {
 		t.Fatalf("split tree was not restored, got %d panes", got)

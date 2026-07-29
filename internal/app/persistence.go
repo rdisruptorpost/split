@@ -96,6 +96,7 @@ func (m *Model) saveState() error {
 func (m *Model) stateSnapshot() (state.Snapshot, error) {
 	snapshot := state.Snapshot{
 		SidebarVisible:    m.sidebarVisible,
+		SidebarWidth:      normalizeSidebarWidth(m.sidebarSize),
 		NextProjectNumber: m.nextProjectNumber,
 	}
 	if active := m.active(); active != nil {
@@ -141,6 +142,7 @@ func (m *Model) stateSnapshot() (state.Snapshot, error) {
 
 func (m *Model) restoreSnapshot(snapshot state.Snapshot) error {
 	m.sidebarVisible = snapshot.SidebarVisible
+	m.sidebarSize = normalizeSidebarWidth(snapshot.SidebarWidth)
 	m.nextProjectNumber = max(2, snapshot.NextProjectNumber)
 	m.tabs = nil
 	m.panes = make(map[string]*pane)

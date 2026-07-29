@@ -2,7 +2,11 @@ package layout
 
 import "math"
 
-const Gap = 1
+const (
+	Gap           = 1
+	MinPaneWidth  = 12
+	MinPaneHeight = 5
+)
 
 type Axis uint8
 
@@ -171,10 +175,10 @@ func Remove(n *Node, paneID string) (*Node, bool) {
 
 func SplitSizes(axis Axis, width, height int, ratio float64) (first, second int) {
 	total := width
-	minimum := 12
+	minimum := MinPaneWidth
 	if axis == Rows {
 		total = height
-		minimum = 5
+		minimum = MinPaneHeight
 	}
 
 	available := max(0, total-Gap)

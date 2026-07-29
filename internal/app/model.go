@@ -89,6 +89,7 @@ type Model struct {
 	modeBeforePrefix mode
 	focus            focusArea
 	sidebarVisible   bool
+	sidebarSize      int
 	sidebarCursor    int
 
 	tabs              []*tab
@@ -107,6 +108,7 @@ type Model struct {
 	contextMenu      paneContextMenuState
 	projectMenu      projectContextMenuState
 	renameDialog     projectRenameState
+	resizeGesture    resizeGestureState
 	selectionGesture terminalSelectionGesture
 	clipboardText    string
 	clipboardPending bool
@@ -133,6 +135,7 @@ func newModel(root string) *Model {
 		mode:              modeNavigate,
 		focus:             focusPanes,
 		sidebarVisible:    true,
+		sidebarSize:       sidebarWidth,
 		panes:             make(map[string]*pane),
 		agents:            make(map[string]agent.State),
 		agentTracker:      agent.NewTracker(),
@@ -321,10 +324,10 @@ func (m *Model) activeProjectRoot() string {
 }
 
 func (m *Model) effectiveSidebarWidth() int {
-	if !m.sidebarVisible || m.width < 72 {
+	if !m.sidebarVisible || m.width < minimumWorkspaceWidth+minimumSidebarWidth {
 		return 0
 	}
-	return sidebarWidth
+	return min(normalizeSidebarWidth(m.sidebarSize), m.maximumEffectiveSidebarWidth())
 }
 
 func (m *Model) workspaceRect() layout.Rect {

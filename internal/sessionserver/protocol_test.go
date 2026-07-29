@@ -87,6 +87,31 @@ func TestMouseReleaseRequestJSONRoundTrip(t *testing.T) {
 		t.Fatalf("mouse release changed across protocol: %#v", message)
 	}
 }
+func TestAltRightMouseMotionRequestJSONRoundTrip(t *testing.T) {
+	originalMouse := tea.Mouse{
+		X: 73, Y: 22, Button: tea.MouseRight, Mod: tea.ModAlt,
+	}
+	original, ok := requestForMessage(tea.MouseMotionMsg(originalMouse))
+	if !ok || original.Kind != requestMotion {
+		t.Fatalf("mouse motion message was not accepted: %#v", original)
+	}
+	encoded, err := json.Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded request
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	message, err := decoded.message()
+	if err != nil {
+		t.Fatal(err)
+	}
+	motionMessage, ok := message.(tea.MouseMotionMsg)
+	if !ok || !reflect.DeepEqual(motionMessage.Mouse(), originalMouse) {
+		t.Fatalf("Alt+right mouse motion changed across protocol: %#v", message)
+	}
+}
 func TestClientFrameMailboxKeepsOnlyLatest(t *testing.T) {
 	client := &Client{frames: make(chan frameResult, 1)}
 	client.queueFrame(frameResult{frame: frame{Content: "stale"}})

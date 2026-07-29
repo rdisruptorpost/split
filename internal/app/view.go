@@ -39,7 +39,7 @@ func (m *Model) renderCursor() *tea.Cursor {
 	if m.renameDialog.open {
 		return m.renderProjectRenameCursor()
 	}
-	if m.contextMenu.open || m.projectMenu.open || m.mode != modeTerminal || m.focus != focusPanes {
+	if m.resizeGesture.active || m.contextMenu.open || m.projectMenu.open || m.mode != modeTerminal || m.focus != focusPanes {
 		return nil
 	}
 	active := m.active()
@@ -115,7 +115,11 @@ func (m *Model) render() string {
 func (m *Model) renderSidebar(width, height int) string {
 	contentWidth := max(1, width-1)
 	lines := make([]string, 0, height)
-	for _, line := range renderSidebarBrand() {
+	brand := renderSidebarBrand()
+	if contentWidth < 22 {
+		brand = []string{styles.logo.Render("split"), "", "", ""}
+	}
+	for _, line := range brand {
 		lines = append(lines, " "+line)
 	}
 	lines = append(lines, " "+styles.eyebrow.Render("PROJECTS"))
@@ -401,7 +405,10 @@ func (m *Model) renderOverview(width, height int) string {
 func (m *Model) renderStatus(width int) string {
 	modeLabel := " NAV "
 	modeColor := palette.accent
-	if m.renameDialog.open {
+	if m.resizeGesture.active {
+		modeLabel = " RESIZE "
+		modeColor = palette.secondary
+	} else if m.renameDialog.open {
 		modeLabel = " RENAME "
 		modeColor = palette.secondary
 	} else if m.projectMenu.open || m.contextMenu.open {
@@ -424,7 +431,9 @@ func (m *Model) renderStatus(width int) string {
 		Render(modeLabel)
 
 	hint := " "
-	if m.renameDialog.open {
+	if m.resizeGesture.active {
+		hint += "drag to resize  release to finish"
+	} else if m.renameDialog.open {
 		noun, _ := m.renameDialogLabels()
 		hint += "type a " + noun + " name  enter save  esc cancel"
 	} else if m.projectMenu.open || m.contextMenu.open {
@@ -436,7 +445,7 @@ func (m *Model) renderStatus(width int) string {
 		case modePrefix:
 			hint += "v/s split  x close  hjkl move pane  = balance  n navigate  q detach"
 		default:
-			hint += "click terminal  right-click pane menu  arrows/hjkl focus  ctrl+b commands"
+			hint += "click terminal  alt+right-drag resize  right-click menu  arrows/hjkl focus"
 		}
 	}
 	left := badge + styles.status.Render(hint)

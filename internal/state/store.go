@@ -17,11 +17,12 @@ import (
 	"split/internal/diagnostics"
 )
 
-const schemaVersion = 6
+const schemaVersion = 7
 
 type Snapshot struct {
 	ActiveProjectID   string
 	SidebarVisible    bool
+	SidebarWidth      int
 	NextProjectNumber int
 	Projects          []Project
 }
@@ -303,6 +304,13 @@ func (s *Store) migrate() error {
 		}
 		version = 6
 	}
+	if version < 7 {
+		if _, err := tx.Exec(`ALTER TABLE app_state
+			ADD COLUMN sidebar_width INTEGER NOT NULL DEFAULT 24`); err != nil {
+			return fmt.Errorf("add persistent sidebar width: %w", err)
+		}
+		version = 7
+	}
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", schemaVersion)); err != nil {
 		return fmt.Errorf("record state schema version: %w", err)
 	}
@@ -313,11 +321,16 @@ func (s *Store) migrate() error {
 }
 
 func (s *Store) Load() (Snapshot, error) {
-	snapshot := Snapshot{SidebarVisible: true, NextProjectNumber: 2}
-	row := s.db.QueryRow(`SELECT active_project_id, sidebar_visible, next_project_number
+	snapshot := Snapshot{SidebarVisible: true, SidebarWidth: 24, NextProjectNumber: 2}
+	row := s.db.QueryRow(`SELECT active_project_id, sidebar_visible, sidebar_width, next_project_number
 		FROM app_state WHERE singleton = 1`)
 	var sidebarVisible int
-	if err := row.Scan(&snapshot.ActiveProjectID, &sidebarVisible, &snapshot.NextProjectNumber); err != nil {
+	if err := row.Scan(
+		&snapshot.ActiveProjectID,
+		&sidebarVisible,
+		&snapshot.SidebarWidth,
+		&snapshot.NextProjectNumber,
+	); err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			return Snapshot{}, fmt.Errorf("load app state: %w", err)
 		}
@@ -417,6 +430,9 @@ func (s *Store) Save(snapshot Snapshot) error {
 	if snapshot.NextProjectNumber < 2 {
 		snapshot.NextProjectNumber = 2
 	}
+	if snapshot.SidebarWidth <= 0 {
+		snapshot.SidebarWidth = 24
+	}
 
 	tx, err := s.db.BeginTx(context.Background(), nil)
 	if err != nil {
@@ -467,13 +483,18 @@ func (s *Store) Save(snapshot Snapshot) error {
 	}
 
 	if _, err := tx.Exec(`INSERT INTO app_state
-		(singleton, active_project_id, sidebar_visible, next_project_number)
-		VALUES (1, ?, ?, ?)
+		(singleton, active_project_id, sidebar_visible, sidebar_width, next_project_number)
+		VALUES (1, ?, ?, ?, ?)
 		ON CONFLICT(singleton) DO UPDATE SET
 			active_project_id = excluded.active_project_id,
 			sidebar_visible = excluded.sidebar_visible,
+			sidebar_width = excluded.sidebar_width,
 			next_project_number = excluded.next_project_number`,
-		snapshot.ActiveProjectID, boolInt(snapshot.SidebarVisible), snapshot.NextProjectNumber); err != nil {
+		snapshot.ActiveProjectID,
+		boolInt(snapshot.SidebarVisible),
+		snapshot.SidebarWidth,
+		snapshot.NextProjectNumber,
+	); err != nil {
 		return fmt.Errorf("save app state: %w", err)
 	}
 

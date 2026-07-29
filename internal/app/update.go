@@ -13,9 +13,14 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case tea.WindowSizeMsg:
 		m.clearTerminalSelection()
+		wasResizing := m.resizeGesture.active
+		m.resizeGesture = resizeGestureState{}
 		m.width = max(1, message.Width)
 		m.height = max(1, message.Height)
 		m.resizeActivePanes()
+		if wasResizing {
+			m.persist()
+		}
 		return m, nil
 
 	case terminalBatchMsg:
@@ -46,6 +51,9 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseReleaseMsg:
+		if m.handleResizeGestureRelease(message.Mouse()) {
+			return m, nil
+		}
 		if !m.renameDialog.open && !m.projectMenu.open && !m.contextMenu.open {
 			m.handleTerminalSelectionRelease(message.Mouse())
 		}
@@ -58,6 +66,9 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMotionMsg:
+		if m.handleResizeGestureMotion(message.Mouse()) {
+			return m, nil
+		}
 		if m.renameDialog.open {
 			m.handleProjectRenameMotion(message.Mouse())
 		} else if m.projectMenu.open {
@@ -240,6 +251,10 @@ func (m *Model) handlePrefixKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleMouseClick(mouse tea.Mouse) {
+	m.finishResizeGesture()
+	if m.beginResizeGesture(mouse) {
+		return
+	}
 	sidebar := m.effectiveSidebarWidth()
 	if sidebar > 0 && mouse.X < sidebar {
 		if mouse.Button != tea.MouseLeft && mouse.Button != tea.MouseRight {
