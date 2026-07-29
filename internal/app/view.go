@@ -113,7 +113,7 @@ func (m *Model) render() string {
 }
 
 func (m *Model) renderSidebar(width, height int) string {
-	contentWidth := max(1, width-1)
+	contentWidth := max(1, width)
 	lines := make([]string, 0, height)
 	for _, line := range renderSidebarBrand() {
 		lines = append(lines, " "+line)
@@ -155,14 +155,13 @@ func (m *Model) renderSidebar(width, height int) string {
 	}
 	lines = append(lines, footer...)
 
-	border := lipgloss.NewStyle().Foreground(palette.border).Render("│")
 	output := make([]string, height)
 	for row := range height {
 		line := ""
 		if row < len(lines) {
 			line = lines[row]
 		}
-		output[row] = fitLine(line, contentWidth) + border
+		output[row] = fitLine(line, contentWidth)
 	}
 	return strings.Join(output, "\n")
 }

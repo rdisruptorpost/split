@@ -59,14 +59,33 @@ func TestInitialViewFillsWindow(t *testing.T) {
 	}
 }
 
+func TestSidebarUsesPaneFrameAsSingleDivider(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+
+	const width = 100
+	const height = 30
+	_, _ = model.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	lines := strings.Split(ansi.Strip(model.View().Content), "\n")
+	boundary := model.effectiveSidebarWidth()
+	row := []rune(lines[1])
+
+	if got := row[boundary-1]; got == '\u2502' {
+		t.Fatal("sidebar should not draw a redundant right border")
+	}
+	if got := row[boundary]; got != '\u2502' {
+		t.Fatalf("pane frame should supply the single divider, got %q", got)
+	}
+}
+
 func TestActiveProjectRowUsesOneContinuousBackgroundStyle(t *testing.T) {
 	model := New(t.TempDir())
 	defer model.Close()
 
-	row := model.renderProjectSidebarRow(0, sidebarWidth-1)
+	row := model.renderProjectSidebarRow(0, sidebarWidth)
 	plain := ansi.Strip(row)
-	if got := ansi.StringWidth(row); got != sidebarWidth-1 {
-		t.Fatalf("active project row width = %d, want %d", got, sidebarWidth-1)
+	if got := ansi.StringWidth(row); got != sidebarWidth {
+		t.Fatalf("active project row width = %d, want %d", got, sidebarWidth)
 	}
 	if want := styles.activeSession.Render(plain); row != want {
 		t.Fatalf("active project row contains nested resets that break its background\nwant: %q\n got: %q", want, row)
