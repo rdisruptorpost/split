@@ -2,12 +2,16 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
 	"split/internal/agent"
+	"split/internal/diagnostics"
 	"split/internal/layout"
 	"split/internal/state"
 	"split/internal/terminal"
@@ -44,13 +48,28 @@ const (
 )
 
 type pane struct {
-	id      string
-	title   string
-	kind    paneKind
-	cwd     string
-	started bool
-	session *terminal.Session
-	err     error
+	id              string
+	title           string
+	kind            paneKind
+	cwd             string
+	resumeProvider  string
+	resumeSessionID string
+	started         bool
+	session         *terminal.Session
+	err             error
+}
+
+type codexSessionResolver interface {
+	Resolve(pid uint32, observedAt time.Time) (string, bool, error)
+	Close() error
+}
+
+type codexCaptureAttempt struct {
+	pid           uint32
+	observedAt    time.Time
+	nextAttempt   time.Time
+	pendingLogged bool
+	lastError     string
 }
 
 type tab struct {
@@ -77,6 +96,8 @@ type Model struct {
 	panes             map[string]*pane
 	agents            map[string]agent.State
 	agentTracker      *agent.Tracker
+	codexSessions     codexSessionResolver
+	codexCaptures     map[string]codexCaptureAttempt
 	nextID            int
 	nextProjectNumber int
 
@@ -115,6 +136,8 @@ func newModel(root string) *Model {
 		panes:             make(map[string]*pane),
 		agents:            make(map[string]agent.State),
 		agentTracker:      agent.NewTracker(),
+		codexSessions:     agent.NewCodexSessionResolver(),
+		codexCaptures:     make(map[string]codexCaptureAttempt),
 		events:            make(chan terminal.Event, 128),
 		nextProjectNumber: 2,
 	}
@@ -141,6 +164,19 @@ func (m *Model) Init() tea.Cmd {
 }
 
 func (m *Model) Close() {
+	statePath := ""
+	if m.store != nil {
+		statePath = m.store.Path()
+		_ = diagnostics.Append(
+			statePath,
+			"model",
+			"close_started",
+			diagnostics.Fields{"panes": strconv.Itoa(len(m.panes))},
+			nil,
+		)
+	}
+	m.captureCodexSessions(m.agents, time.Now(), true)
+	m.SyncTerminalMetadata()
 	m.persist()
 	for _, item := range m.panes {
 		if item.session != nil {
@@ -150,6 +186,12 @@ func (m *Model) Close() {
 	if m.store != nil {
 		_ = m.store.Close()
 		m.store = nil
+	}
+	if m.codexSessions != nil {
+		_ = m.codexSessions.Close()
+	}
+	if statePath != "" {
+		_ = diagnostics.Append(statePath, "model", "close_completed", nil, nil)
 	}
 }
 
@@ -189,13 +231,70 @@ func (m *Model) startPane(item *pane) {
 		return
 	}
 	item.started = true
-	session, err := terminal.Start(item.id, terminal.DefaultShell(item.cwd), 80, 24, m.events)
+	statePath := ""
+	if m.store != nil {
+		statePath = m.store.Path()
+	}
+	fields := diagnostics.Fields{
+		"pane_id":           item.id,
+		"title":             item.title,
+		"working_directory": item.cwd,
+		"resume_provider":   item.resumeProvider,
+		"resume_session_id": item.resumeSessionID,
+	}
+	_ = diagnostics.Append(statePath, "model", "pane_starting", fields, nil)
+
+	command := terminal.DefaultShell(item.cwd)
+	if m.store != nil {
+		executable, err := os.Executable()
+		if err == nil {
+			fields["hook_executable"] = executable
+			command.Env = map[string]string{
+				"SPLIT_ENV":        "1",
+				"SPLIT_PANE_ID":    item.id,
+				"SPLIT_STATE_PATH": statePath,
+				"SPLIT_HOOK_EXE":   executable,
+			}
+		} else {
+			_ = diagnostics.Append(statePath, "model", "pane_environment_failed", fields, err)
+		}
+	}
+	session, err := terminal.Start(item.id, command, 80, 24, m.events)
 	if err != nil {
 		item.err = err
 		m.notice = item.title + " unavailable: " + err.Error()
+		_ = diagnostics.Append(statePath, "model", "pane_start_failed", fields, err)
 		return
 	}
 	item.session = session
+	fields["shell_pid"] = strconv.FormatUint(uint64(session.ProcessID()), 10)
+	if resumeCommand, ok := agentResumeCommand(
+		item.resumeProvider,
+		item.resumeSessionID,
+	); ok {
+		session.SendCommandWhenReady(resumeCommand)
+		_ = diagnostics.Append(statePath, "model", "agent_resume_scheduled", fields, nil)
+		return
+	}
+	_ = diagnostics.Append(statePath, "model", "pane_started_without_resume", fields, nil)
+}
+
+func agentResumeCommand(provider, sessionID string) (string, bool) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || len(sessionID) > 1024 ||
+		sessionID[0] == '-' || strings.ContainsAny(sessionID, "\x00\r\n") {
+		return "", false
+	}
+	quotedID := "'" + strings.ReplaceAll(sessionID, "'", "''") + "'"
+	switch provider {
+	case "codex":
+		return "codex resume " + quotedID, true
+	case "claude":
+		return "claude --resume " + quotedID, true
+	default:
+		return "", false
+	}
 }
 
 func (m *Model) active() *tab {
@@ -318,7 +417,7 @@ func (m *Model) closeActivePane() {
 		if len(m.tabs) == 1 {
 			m.mode = modeNavigate
 			m.focus = focusPanes
-			m.notice = "Split keeps at least one pane open"
+			m.notice = "split keeps at least one pane open"
 			return
 		}
 		m.closePane(active.activePane)
@@ -354,7 +453,7 @@ func (m *Model) closeProject(projectIndex int) bool {
 	}
 	if len(m.tabs) <= 1 {
 		m.focusSidebarNavigation(0)
-		m.notice = "Split keeps at least one project open"
+		m.notice = "split keeps at least one project open"
 		return false
 	}
 
@@ -393,6 +492,7 @@ func (m *Model) closePane(paneID string) {
 	}
 	delete(m.panes, paneID)
 	delete(m.agents, paneID)
+	delete(m.codexCaptures, paneID)
 }
 
 func (m *Model) switchTab(delta int) {
@@ -513,7 +613,249 @@ func (m *Model) RefreshAgents(now time.Time) bool {
 
 	next := m.agentTracker.Refresh(targets, now)
 	changed := !sameAgentStates(m.agents, next)
+	for paneID, current := range next {
+		previous, existed := m.agents[paneID]
+		if !existed || previous.Status == agent.StatusExited {
+			continue
+		}
+		clearReason := ""
+		eventPrefix := ""
+		switch {
+		case current.Status == agent.StatusExited:
+			clearReason = "exited"
+			eventPrefix = "agent_exit"
+		case previous.PID != current.PID || previous.Kind != current.Kind:
+			clearReason = "replaced"
+			eventPrefix = "agent_replaced"
+		default:
+			continue
+		}
+		if m.store != nil {
+			fields := diagnostics.Fields{
+				"pane_id":         paneID,
+				"provider":        previous.Kind.Label(),
+				"reason":          clearReason,
+				"previous_pid":    strconv.FormatUint(uint64(previous.PID), 10),
+				"current_pid":     strconv.FormatUint(uint64(current.PID), 10),
+				"previous_status": previous.Status.Label(),
+				"current_status":  current.Status.Label(),
+			}
+			_ = diagnostics.Append(
+				m.store.Path(),
+				"model",
+				eventPrefix+"_binding_clear_started",
+				fields,
+				nil,
+			)
+			if err := m.store.ClearPaneAgentSession(paneID); err != nil {
+				m.notice = "Could not clear previous agent session: " + err.Error()
+				_ = diagnostics.Append(
+					m.store.Path(),
+					"model",
+					eventPrefix+"_binding_clear_failed",
+					fields,
+					err,
+				)
+			}
+		}
+		if item := m.panes[paneID]; item != nil {
+			item.resumeProvider = ""
+			item.resumeSessionID = ""
+		}
+		delete(m.codexCaptures, paneID)
+	}
+	if m.captureCodexSessions(next, now, false) {
+		changed = true
+	}
 	m.agents = next
+	return changed
+}
+
+func (m *Model) captureCodexSessions(
+	states map[string]agent.State,
+	now time.Time,
+	force bool,
+) bool {
+	if m.store == nil || m.codexSessions == nil {
+		return false
+	}
+	captured := false
+	for paneID, current := range states {
+		if current.Kind != agent.KindCodex || current.Status == agent.StatusExited ||
+			current.PID == 0 {
+			continue
+		}
+		item := m.panes[paneID]
+		if item == nil {
+			continue
+		}
+		if strings.EqualFold(item.resumeProvider, "codex") &&
+			strings.TrimSpace(item.resumeSessionID) != "" {
+			delete(m.codexCaptures, paneID)
+			continue
+		}
+
+		attempt, exists := m.codexCaptures[paneID]
+		if !exists || attempt.pid != current.PID {
+			attempt = codexCaptureAttempt{
+				pid:        current.PID,
+				observedAt: now,
+			}
+		}
+		if !force && now.Before(attempt.nextAttempt) {
+			m.codexCaptures[paneID] = attempt
+			continue
+		}
+
+		fields := diagnostics.Fields{
+			"pane_id":     paneID,
+			"provider":    "codex",
+			"agent_pid":   strconv.FormatUint(uint64(current.PID), 10),
+			"observed_at": attempt.observedAt.Format(time.RFC3339Nano),
+			"source":      "codex_process_log",
+		}
+		sessionID, found, err := m.codexSessions.Resolve(
+			current.PID,
+			attempt.observedAt,
+		)
+		if err != nil {
+			message := err.Error()
+			if attempt.lastError != message {
+				_ = diagnostics.Append(
+					m.store.Path(),
+					"model",
+					"codex_session_correlation_failed",
+					fields,
+					err,
+				)
+			}
+			attempt.lastError = message
+			attempt.nextAttempt = now.Add(5 * time.Second)
+			m.codexCaptures[paneID] = attempt
+			continue
+		}
+		attempt.lastError = ""
+		if !found {
+			if !attempt.pendingLogged {
+				_ = diagnostics.Append(
+					m.store.Path(),
+					"model",
+					"codex_session_correlation_pending",
+					fields,
+					nil,
+				)
+				attempt.pendingLogged = true
+			}
+			attempt.nextAttempt = now.Add(750 * time.Millisecond)
+			m.codexCaptures[paneID] = attempt
+			continue
+		}
+
+		workingDirectory := item.cwd
+		if item.session != nil {
+			if observed := item.session.WorkingDirectory(); filepath.IsAbs(observed) {
+				workingDirectory = observed
+			}
+		}
+		fields["session_id"] = sessionID
+		fields["working_directory"] = workingDirectory
+		if !filepath.IsAbs(workingDirectory) {
+			err := fmt.Errorf(
+				"Codex pane working directory is not absolute: %q",
+				workingDirectory,
+			)
+			_ = diagnostics.Append(
+				m.store.Path(),
+				"model",
+				"codex_session_correlation_failed",
+				fields,
+				err,
+			)
+			attempt.nextAttempt = now.Add(5 * time.Second)
+			m.codexCaptures[paneID] = attempt
+			continue
+		}
+		workingDirectory = filepath.Clean(workingDirectory)
+		if err := m.store.UpsertPaneAgentSession(
+			paneID,
+			"codex",
+			sessionID,
+			workingDirectory,
+		); err != nil {
+			_ = diagnostics.Append(
+				m.store.Path(),
+				"model",
+				"codex_session_correlation_failed",
+				fields,
+				err,
+			)
+			attempt.nextAttempt = now.Add(5 * time.Second)
+			m.codexCaptures[paneID] = attempt
+			continue
+		}
+		item.resumeProvider = "codex"
+		item.resumeSessionID = sessionID
+		delete(m.codexCaptures, paneID)
+		_ = diagnostics.Append(
+			m.store.Path(),
+			"model",
+			"codex_session_correlated",
+			fields,
+			nil,
+		)
+		captured = true
+	}
+	return captured
+}
+
+// SyncTerminalMetadata writes only cwd values that changed since the last
+// PowerShell prompt. It is cheap enough to run periodically even with no UI
+// client attached, which makes a later reboot restore the right directories.
+func (m *Model) SyncTerminalMetadata() bool {
+	if m.store == nil {
+		return false
+	}
+	changed := false
+	for paneID, item := range m.panes {
+		if item == nil || item.session == nil {
+			continue
+		}
+		workingDirectory := item.session.WorkingDirectory()
+		if workingDirectory == "" || !filepath.IsAbs(workingDirectory) ||
+			filepath.Clean(workingDirectory) == filepath.Clean(item.cwd) {
+			continue
+		}
+		workingDirectory = filepath.Clean(workingDirectory)
+		previousDirectory := item.cwd
+		if err := m.store.UpdatePaneWorkingDirectory(paneID, workingDirectory); err != nil {
+			m.notice = "Could not save terminal directory: " + err.Error()
+			_ = diagnostics.Append(
+				m.store.Path(),
+				"model",
+				"pane_directory_update_failed",
+				diagnostics.Fields{
+					"pane_id":            paneID,
+					"previous_directory": previousDirectory,
+					"working_directory":  workingDirectory,
+				},
+				err,
+			)
+			continue
+		}
+		item.cwd = workingDirectory
+		_ = diagnostics.Append(
+			m.store.Path(),
+			"model",
+			"pane_directory_updated",
+			diagnostics.Fields{
+				"pane_id":            paneID,
+				"previous_directory": previousDirectory,
+				"working_directory":  workingDirectory,
+			},
+			nil,
+		)
+		changed = true
+	}
 	return changed
 }
 

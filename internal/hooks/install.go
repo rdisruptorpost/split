@@ -42,10 +42,14 @@ func DefaultPaths() (Paths, error) {
 
 func InstallAll(paths Paths, executable, statePath string) ([]Result, error) {
 	if executable == "" {
-		return nil, errors.New("Split executable path is empty")
+		return nil, errors.New("split executable path is empty")
 	}
 	if statePath == "" {
-		return nil, errors.New("Split state path is empty")
+		return nil, errors.New("split state path is empty")
+	}
+	scriptPath := filepath.Join(filepath.Dir(statePath), "session-hook.ps1")
+	if err := writeSessionHookScript(scriptPath); err != nil {
+		return nil, err
 	}
 	providers := []struct {
 		name string
@@ -56,7 +60,7 @@ func InstallAll(paths Paths, executable, statePath string) ([]Result, error) {
 	}
 	results := make([]Result, 0, len(providers))
 	for _, provider := range providers {
-		result, err := installOne(provider.path, provider.name, executable, statePath)
+		result, err := installOne(provider.path, provider.name, scriptPath)
 		if err != nil {
 			return results, fmt.Errorf("install %s hook: %w", provider.name, err)
 		}
@@ -65,7 +69,7 @@ func InstallAll(paths Paths, executable, statePath string) ([]Result, error) {
 	return results, nil
 }
 
-func installOne(path, provider, executable, statePath string) (Result, error) {
+func installOne(path, provider, scriptPath string) (Result, error) {
 	result := Result{Provider: provider, Path: path}
 	document := make(map[string]any)
 	original, err := os.ReadFile(path)
@@ -83,10 +87,11 @@ func installOne(path, provider, executable, statePath string) (Result, error) {
 		document = make(map[string]any)
 	}
 
-	command := quoteExecutable(executable) + " hook session-start " + provider + " " + quoteExecutable(statePath)
+	command := `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ` +
+		quoteExecutable(scriptPath) + " session-start " + provider
 	commandWindows := ""
 	if provider == "codex" {
-		commandWindows = powershellHookCommand(executable, provider, statePath)
+		commandWindows = command
 	}
 	changed, err := mergeSessionStartHook(document, provider, command, commandWindows)
 	if err != nil {
@@ -136,7 +141,6 @@ func mergeSessionStartHook(document map[string]any, provider, command, commandWi
 	if !ok {
 		return false, errors.New("hooks.SessionStart configuration is not an array")
 	}
-	marker := " hook session-start " + provider
 	for _, groupValue := range sessionHooks {
 		group, ok := groupValue.(map[string]any)
 		if !ok {
@@ -153,7 +157,8 @@ func mergeSessionStartHook(document map[string]any, provider, command, commandWi
 			}
 			existing, _ := handler["command"].(string)
 			existingWindows, _ := handler["commandWindows"].(string)
-			if !strings.Contains(existing, marker) && !strings.Contains(existingWindows, marker) {
+			if !isSplitSessionStartCommand(existing, provider) &&
+				!isSplitSessionStartCommand(existingWindows, provider) {
 				continue
 			}
 			changed := false
@@ -186,14 +191,126 @@ func mergeSessionStartHook(document map[string]any, provider, command, commandWi
 }
 
 func quoteExecutable(path string) string {
-	return `"` + strings.ReplaceAll(path, `"`, `\"`) + `"`
+	return `"` + path + `"`
 }
 
-func powershellHookCommand(executable, provider, statePath string) string {
-	executable = strings.ReplaceAll(executable, "'", "''")
-	statePath = strings.ReplaceAll(statePath, "'", "''")
-	return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "& '` +
-		executable + `' hook session-start ` + provider + ` '` + statePath + `'"`
+func isSplitSessionStartCommand(command, provider string) bool {
+	command = strings.ToLower(command)
+	provider = strings.ToLower(provider)
+	legacyMarker := " hook session-start " + provider
+	managedMarker := " session-start " + provider
+	return strings.Contains(command, legacyMarker) ||
+		(strings.Contains(command, "session-hook.ps1") && strings.Contains(command, managedMarker))
+}
+
+const sessionHookScript = `param(
+    [string]$Action,
+    [string]$Provider
+)
+
+$ErrorActionPreference = 'SilentlyContinue'
+
+function Write-SplitHookTrace {
+    param(
+        [string]$EventName,
+        [hashtable]$Fields,
+        [string]$ErrorText = ''
+    )
+    try {
+        if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+            return
+        }
+        $splitLogDirectory = Join-Path $env:LOCALAPPDATA 'split'
+        [System.IO.Directory]::CreateDirectory($splitLogDirectory) | Out-Null
+        $splitEntry = [ordered]@{
+            time = [DateTimeOffset]::Now.ToString('o')
+            pid = $PID
+            component = 'hook-wrapper'
+            event = $EventName
+        }
+        if ($null -ne $Fields -and $Fields.Count -gt 0) {
+            $splitEntry.fields = $Fields
+        }
+        if (-not [string]::IsNullOrWhiteSpace($ErrorText)) {
+            $splitEntry.error = $ErrorText
+        }
+        $splitLine = $splitEntry | ConvertTo-Json -Compress -Depth 4
+        $splitLogPath = Join-Path $splitLogDirectory 'runtime.log'
+        [System.IO.File]::AppendAllText(
+            $splitLogPath,
+            $splitLine + [Environment]::NewLine,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+    } catch {
+    }
+}
+
+$splitTraceEnabled = (
+    $env:SPLIT_ENV -eq '1' -or
+    $env:TERM_PROGRAM -eq 'split' -or
+    -not [string]::IsNullOrWhiteSpace($env:SPLIT_PANE_ID) -or
+    -not [string]::IsNullOrWhiteSpace($env:SPLIT_STATE_PATH) -or
+    -not [string]::IsNullOrWhiteSpace($env:SPLIT_HOOK_EXE)
+)
+$splitFields = @{
+    action = $Action
+    provider = $Provider
+    split_env = $env:SPLIT_ENV
+    term_program = $env:TERM_PROGRAM
+    pane_id = $env:SPLIT_PANE_ID
+    state_path = $env:SPLIT_STATE_PATH
+    hook_executable = $env:SPLIT_HOOK_EXE
+    process_cwd = (Get-Location).Path
+}
+if ($splitTraceEnabled) {
+    Write-SplitHookTrace 'invoked' $splitFields
+}
+
+if ($Action -ne 'session-start' -or
+    $Provider -notin @('codex', 'claude') -or
+    $env:SPLIT_ENV -ne '1' -or
+    [string]::IsNullOrWhiteSpace($env:SPLIT_PANE_ID) -or
+    [string]::IsNullOrWhiteSpace($env:SPLIT_STATE_PATH) -or
+    [string]::IsNullOrWhiteSpace($env:SPLIT_HOOK_EXE)) {
+    if ($splitTraceEnabled) {
+        Write-SplitHookTrace 'rejected' $splitFields 'split pane environment is incomplete'
+    }
+    exit 0
+}
+
+$splitPreviousOutputEncoding = $OutputEncoding
+try {
+    $splitPayload = [Console]::In.ReadToEnd()
+    $splitFields.payload_chars = $splitPayload.Length.ToString()
+    Write-SplitHookTrace 'helper_starting' $splitFields
+    $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $splitPayload | & $env:SPLIT_HOOK_EXE hook session-start $Provider $env:SPLIT_STATE_PATH 2>$null | Out-Null
+    $splitFields.helper_exit_code = $LASTEXITCODE.ToString()
+    Write-SplitHookTrace 'helper_finished' $splitFields
+} catch {
+    Write-SplitHookTrace 'helper_failed' $splitFields $_.Exception.Message
+} finally {
+    $OutputEncoding = $splitPreviousOutputEncoding
+}
+exit 0
+`
+
+func writeSessionHookScript(path string) error {
+	content := []byte(sessionHookScript)
+	existing, err := os.ReadFile(path)
+	if err == nil && string(existing) == string(content) {
+		return nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read managed session hook: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create managed session hook directory: %w", err)
+	}
+	if err := replaceFile(path, content); err != nil {
+		return fmt.Errorf("write managed session hook: %w", err)
+	}
+	return nil
 }
 
 func writeBackupOnce(path string, content []byte) error {

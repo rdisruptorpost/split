@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"split/internal/app"
+	"split/internal/diagnostics"
+	"split/internal/state"
 	"split/internal/terminal"
 )
 
@@ -32,21 +34,43 @@ type peerRequest struct {
 // app model, SQLite connection, terminal emulators, ConPTY handles, and child
 // processes until an explicit stop request arrives.
 func Run(root, statePath string) error {
+	_ = diagnostics.Append(
+		statePath,
+		"server",
+		"run_requested",
+		diagnostics.Fields{"launch_root": root},
+		nil,
+	)
 	endpoint, err := Endpoint(statePath)
 	if err != nil {
+		_ = diagnostics.Append(statePath, "server", "endpoint_failed", nil, err)
 		return err
 	}
 	listener, err := listenEndpoint(endpoint)
 	if err != nil {
-		return fmt.Errorf("listen for Split clients: %w", err)
+		err = fmt.Errorf("listen for split clients: %w", err)
+		_ = diagnostics.Append(statePath, "server", "listen_failed", nil, err)
+		return err
 	}
 	defer listener.Close()
+	if err := state.MigrateLegacyDefaultDirectory(statePath); err != nil {
+		_ = diagnostics.Append(statePath, "server", "state_migration_failed", nil, err)
+		return err
+	}
 
 	model, err := app.Open(root, statePath)
 	if err != nil {
+		_ = diagnostics.Append(statePath, "server", "model_open_failed", nil, err)
 		return err
 	}
 	defer model.Close()
+	_ = diagnostics.Append(
+		statePath,
+		"server",
+		"started",
+		diagnostics.Fields{"endpoint": endpoint, "launch_root": root},
+		nil,
+	)
 
 	accepted := make(chan acceptedPeer, 4)
 	requests := make(chan peerRequest, 128)
@@ -56,6 +80,7 @@ func Run(root, statePath string) error {
 	var active *runtimePeer
 	lastFrame := time.Time{}
 	lastAgentScan := time.Time{}
+	lastMetadataSync := time.Time{}
 	dirty := false
 	var pendingClipboard *string
 	ticker := time.NewTicker(time.Second / 60)
@@ -75,6 +100,7 @@ func Run(root, statePath string) error {
 			active = nil
 			pendingClipboard = nil
 			model.ClientDetached()
+			_ = diagnostics.Append(statePath, "server", "client_detached", nil, nil)
 		}
 	}
 	send := func(peer *runtimePeer, value frame) bool {
@@ -85,7 +111,7 @@ func Run(root, statePath string) error {
 		err := peer.encoder.Encode(value)
 		_ = peer.connection.SetWriteDeadline(time.Time{})
 		if err != nil {
-			log.Printf("Split client frame write failed: %v", err)
+			log.Printf("split client frame write failed: %v", err)
 			closePeer(peer)
 			return false
 		}
@@ -113,7 +139,7 @@ func Run(root, statePath string) error {
 				if errors.Is(result.err, net.ErrClosed) {
 					return nil
 				}
-				return fmt.Errorf("accept Split client: %w", result.err)
+				return fmt.Errorf("accept split client: %w", result.err)
 			}
 			peer := &runtimePeer{connection: result.connection, encoder: json.NewEncoder(result.connection)}
 			peers[peer] = struct{}{}
@@ -128,7 +154,7 @@ func Run(root, statePath string) error {
 				continue
 			}
 			if incoming.request.Version != protocolVersion {
-				send(incoming.peer, frame{Version: protocolVersion, Error: "The Split client and runtime use different protocol versions."})
+				send(incoming.peer, frame{Version: protocolVersion, Error: "The split client and runtime use different protocol versions."})
 				closePeer(incoming.peer)
 				continue
 			}
@@ -141,17 +167,21 @@ func Run(root, statePath string) error {
 				}
 				active = incoming.peer
 				dirty = false
+				_ = diagnostics.Append(statePath, "server", "client_attached", nil, nil)
 				sendView(active, false)
 
 			case requestStop:
 				// Finish persistence and terminate every ConPTY child before the
 				// command acknowledges shutdown to the caller.
+				_ = diagnostics.Append(statePath, "server", "stop_requested", nil, nil)
 				model.Close()
+				_ = diagnostics.Append(statePath, "server", "stop_persisted", nil, nil)
 				send(incoming.peer, frame{Version: protocolVersion, Stopped: true})
 				_ = listener.Close()
 				for peer := range peers {
 					_ = peer.connection.Close()
 				}
+				_ = diagnostics.Append(statePath, "server", "stopped", nil, nil)
 				return nil
 
 			default:
@@ -204,6 +234,12 @@ func Run(root, statePath string) error {
 			if now.Sub(lastAgentScan) >= 250*time.Millisecond {
 				lastAgentScan = now
 				if model.RefreshAgents(now) {
+					dirty = true
+				}
+			}
+			if now.Sub(lastMetadataSync) >= time.Second {
+				lastMetadataSync = now
+				if model.SyncTerminalMetadata() {
 					dirty = true
 				}
 			}

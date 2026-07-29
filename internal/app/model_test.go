@@ -33,7 +33,7 @@ func TestInitialViewFillsWindow(t *testing.T) {
 	}
 	plainView := ansi.Strip(view.Content)
 	if !strings.Contains(plainView, sidebarBrandFrame[1]) {
-		t.Fatal("view does not contain the Split graphic")
+		t.Fatal("view does not contain the split graphic")
 	}
 	if strings.Contains(plainView, "SPLIT ·") {
 		t.Fatal("legacy text branding should be replaced by the graphic")
@@ -160,7 +160,7 @@ func TestRightClickProjectMenuOpensRenameDialog(t *testing.T) {
 	if got := model.tabs[0].title; got != "release workspace" {
 		t.Fatalf("project was renamed to %q", got)
 	}
-	if got := model.View().WindowTitle; got != "Split \u2014 release workspace" {
+	if got := model.View().WindowTitle; got != "split \u2014 release workspace" {
 		t.Fatalf("active window title should follow the project name, got %q", got)
 	}
 
@@ -247,7 +247,7 @@ func TestClosingActiveProjectSelectsNeighborAndKeepsFinalProject(t *testing.T) {
 		t.Fatal("active project's pane remains after close")
 	}
 	if model.closeProject(0) {
-		t.Fatal("Split must refuse to close its final project")
+		t.Fatal("split must refuse to close its final project")
 	}
 	if len(model.tabs) != 1 || model.active() != firstProject {
 		t.Fatal("refusing the final close should leave the project intact")
@@ -642,7 +642,7 @@ func TestPaneContextMenuCreatesPlainTerminalWithMouse(t *testing.T) {
 	if view.Cursor != nil {
 		t.Fatal("context menu should hide the terminal cursor")
 	}
-	if !strings.Contains(view.Content, "Split right") || !strings.Contains(view.Content, "Close pane") {
+	if !strings.Contains(view.Content, "split right") || !strings.Contains(view.Content, "Close pane") {
 		t.Fatal("context menu is missing pane actions")
 	}
 	for row, line := range strings.Split(view.Content, "\n") {
@@ -879,5 +879,28 @@ func TestClickingSidebarAgentSelectsPaneButKeepsSidebarFocus(t *testing.T) {
 	}
 	if model.mode != modeNavigate || model.focus != focusSidebar {
 		t.Fatal("clicking an agent row should keep keyboard focus in the sidebar")
+	}
+}
+
+func TestAgentResumeCommandUsesOnlyExactProviderSessionIDs(t *testing.T) {
+	tests := []struct {
+		provider  string
+		sessionID string
+		want      string
+		ok        bool
+	}{
+		{provider: "codex", sessionID: "019fa900-e81f-7061-b8c3-948b6c301456", want: "codex resume '019fa900-e81f-7061-b8c3-948b6c301456'", ok: true},
+		{provider: "claude", sessionID: "64d41bea-ae7a-447e-99e0-32d44d2dda90", want: "claude --resume '64d41bea-ae7a-447e-99e0-32d44d2dda90'", ok: true},
+		{provider: "codex", ok: false},
+		{provider: "unknown", sessionID: "session-1", ok: false},
+		{provider: "codex", sessionID: "-dangerous", ok: false},
+		{provider: "claude", sessionID: "bad\ncommand", ok: false},
+	}
+	for _, test := range tests {
+		got, ok := agentResumeCommand(test.provider, test.sessionID)
+		if got != test.want || ok != test.ok {
+			t.Fatalf("agentResumeCommand(%q, %q) = %q, %v; want %q, %v",
+				test.provider, test.sessionID, got, ok, test.want, test.ok)
+		}
 	}
 }

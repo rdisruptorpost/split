@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"split/internal/diagnostics"
 	"split/internal/layout"
 	"split/internal/state"
 )
@@ -20,8 +22,16 @@ type persistedLayout struct {
 }
 
 func Open(root, statePath string) (*Model, error) {
+	_ = diagnostics.Append(
+		statePath,
+		"model",
+		"open_started",
+		diagnostics.Fields{"launch_root": root},
+		nil,
+	)
 	store, err := state.Open(statePath)
 	if err != nil {
+		_ = diagnostics.Append(statePath, "model", "state_open_failed", nil, err)
 		return nil, err
 	}
 	model := newModel(root)
@@ -29,21 +39,36 @@ func Open(root, statePath string) (*Model, error) {
 
 	snapshot, err := store.Load()
 	if err != nil {
+		_ = diagnostics.Append(statePath, "model", "snapshot_load_failed", nil, err)
 		_ = store.Close()
 		return nil, err
 	}
 	if len(snapshot.Projects) == 0 {
+		_ = diagnostics.Append(statePath, "model", "default_project_created", nil, nil)
 		model.initializeDefaultProject()
 		if err := model.saveState(); err != nil {
+			_ = diagnostics.Append(statePath, "model", "default_project_save_failed", nil, err)
 			model.Close()
 			return nil, err
 		}
 		return model, nil
 	}
 	if err := model.restoreSnapshot(snapshot); err != nil {
+		_ = diagnostics.Append(statePath, "model", "snapshot_restore_failed", nil, err)
 		_ = store.Close()
-		return nil, fmt.Errorf("restore Split state: %w", err)
+		return nil, fmt.Errorf("restore split state: %w", err)
 	}
+	_ = diagnostics.Append(
+		statePath,
+		"model",
+		"open_completed",
+		diagnostics.Fields{
+			"active_project_id": model.active().id,
+			"projects":          strconv.Itoa(len(model.tabs)),
+			"panes":             strconv.Itoa(len(model.panes)),
+		},
+		nil,
+	)
 	return model, nil
 }
 
@@ -53,6 +78,7 @@ func (m *Model) persist() {
 	}
 	if err := m.saveState(); err != nil {
 		m.notice = "Could not save workspace: " + err.Error()
+		_ = diagnostics.Append(m.store.Path(), "model", "snapshot_save_failed", nil, err)
 	}
 }
 
@@ -92,6 +118,12 @@ func (m *Model) stateSnapshot() (state.Snapshot, error) {
 			if item == nil {
 				return state.Snapshot{}, fmt.Errorf("project %s references missing pane %s", project.id, paneID)
 			}
+			if item.session != nil {
+				observedDirectory := item.session.WorkingDirectory()
+				if filepath.IsAbs(observedDirectory) {
+					item.cwd = filepath.Clean(observedDirectory)
+				}
+			}
 			paneTitle := strings.TrimSpace(item.title)
 			if paneTitle == "" {
 				paneTitle = "PowerShell"
@@ -121,6 +153,10 @@ func (m *Model) restoreSnapshot(snapshot state.Snapshot) error {
 		projectPaneIDs := make(map[string]struct{}, len(savedProject.Panes))
 		for _, savedPane := range savedProject.Panes {
 			cwd := savedPane.WorkingDirectory
+			if savedPane.AgentProvider != "" && savedPane.AgentSessionID != "" &&
+				filepath.IsAbs(savedPane.AgentDirectory) {
+				cwd = savedPane.AgentDirectory
+			}
 			if cwd == "" {
 				cwd = savedProject.RootPath
 			}
@@ -129,10 +165,31 @@ func (m *Model) restoreSnapshot(snapshot state.Snapshot) error {
 				paneTitle = "PowerShell"
 			}
 			item := &pane{
-				id:    savedPane.ID,
-				title: paneTitle,
-				kind:  paneTerminal,
-				cwd:   cwd,
+				id:              savedPane.ID,
+				title:           paneTitle,
+				kind:            paneTerminal,
+				cwd:             cwd,
+				resumeProvider:  savedPane.AgentProvider,
+				resumeSessionID: savedPane.AgentSessionID,
+			}
+			if m.store != nil {
+				_ = diagnostics.Append(
+					m.store.Path(),
+					"model",
+					"pane_restore_loaded",
+					diagnostics.Fields{
+						"project_id":                 savedProject.ID,
+						"project_name":               savedProject.Name,
+						"pane_id":                    savedPane.ID,
+						"stored_working_directory":   savedPane.WorkingDirectory,
+						"agent_directory":            savedPane.AgentDirectory,
+						"selected_working_directory": cwd,
+						"resume_provider":            savedPane.AgentProvider,
+						"resume_session_id":          savedPane.AgentSessionID,
+						"resume_expected":            strconv.FormatBool(savedPane.AgentProvider != "" && savedPane.AgentSessionID != ""),
+					},
+					nil,
+				)
 			}
 			m.panes[item.id] = item
 			projectPaneIDs[item.id] = struct{}{}

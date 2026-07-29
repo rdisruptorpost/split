@@ -104,7 +104,7 @@ func requestForMessage(message tea.Msg) (request, bool) {
 
 func (r request) message() (tea.Msg, error) {
 	if r.Version != protocolVersion {
-		return nil, errors.New("incompatible Split runtime protocol")
+		return nil, errors.New("incompatible split runtime protocol")
 	}
 	switch r.Kind {
 	case requestResize:
@@ -137,7 +137,7 @@ func (r request) message() (tea.Msg, error) {
 		}
 		return tea.MouseMotionMsg(*r.Mouse), nil
 	default:
-		return nil, errors.New("unknown Split runtime request")
+		return nil, errors.New("unknown split runtime request")
 	}
 }
 

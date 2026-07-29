@@ -136,10 +136,10 @@ func TestClipboardFrameJSONRoundTripPreservesEmptySelection(t *testing.T) {
 	}
 }
 func TestViewFrameRoundTripPreservesCursorAndModes(t *testing.T) {
-	original := tea.NewView("\x1b[31mSplit\x1b[0m")
+	original := tea.NewView("\x1b[31msplit\x1b[0m")
 	original.BackgroundColor = color.RGBA{R: 12, G: 13, B: 14, A: 255}
 	original.ForegroundColor = color.RGBA{R: 220, G: 221, B: 222, A: 255}
-	original.WindowTitle = "Split test"
+	original.WindowTitle = "split test"
 	original.AltScreen = true
 	original.ReportFocus = true
 	original.MouseMode = tea.MouseModeAllMotion

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"image/color"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,22 +73,26 @@ type Session struct {
 	command Command
 	events  chan<- Event
 
-	mu              sync.RWMutex
-	emulator        *vt.Emulator
-	pseudoterm      pty.Pty
-	process         *pty.Cmd
-	state           State
-	stateErr        error
-	lastActivity    time.Time
-	title           string
-	cursorShown     bool
-	cursorBlink     bool
-	cursorStyle     vt.CursorStyle
-	scrollOffset    int
-	selection       terminalSelection
-	mouseModes      map[int]struct{}
-	alternateScroll bool
-	outputFilter    outputFilter
+	mu               sync.RWMutex
+	emulator         *vt.Emulator
+	pseudoterm       pty.Pty
+	process          *pty.Cmd
+	state            State
+	stateErr         error
+	lastActivity     time.Time
+	title            string
+	cursorShown      bool
+	cursorBlink      bool
+	cursorStyle      vt.CursorStyle
+	scrollOffset     int
+	selection        terminalSelection
+	mouseModes       map[int]struct{}
+	alternateScroll  bool
+	outputFilter     outputFilter
+	workingDirectory string
+	promptReady      chan struct{}
+	closed           chan struct{}
+	promptReadyOnce  sync.Once
 
 	closeOnce sync.Once
 	workers   sync.WaitGroup
@@ -118,22 +123,35 @@ func Start(id string, command Command, width, height int, events chan<- Event) (
 	cmd.Env = terminalEnvironment(os.Environ(), command.Env)
 
 	session := &Session{
-		id:           id,
-		command:      command,
-		events:       events,
-		emulator:     emulator,
-		pseudoterm:   pseudoterm,
-		process:      cmd,
-		state:        Starting,
-		lastActivity: time.Now(),
-		cursorShown:  true,
-		cursorBlink:  true,
-		cursorStyle:  vt.CursorBlock,
-		mouseModes:   make(map[int]struct{}),
+		id:               id,
+		command:          command,
+		events:           events,
+		emulator:         emulator,
+		pseudoterm:       pseudoterm,
+		process:          cmd,
+		state:            Starting,
+		lastActivity:     time.Now(),
+		cursorShown:      true,
+		cursorBlink:      true,
+		cursorStyle:      vt.CursorBlock,
+		mouseModes:       make(map[int]struct{}),
+		workingDirectory: filepath.Clean(command.Dir),
+		promptReady:      make(chan struct{}),
+		closed:           make(chan struct{}),
 	}
 	emulator.SetCallbacks(vt.Callbacks{
 		Title: func(title string) {
 			session.title = title
+		},
+		WorkingDirectory: func(value string) {
+			workingDirectory := normalizeWorkingDirectory(value)
+			if workingDirectory == "" {
+				return
+			}
+			session.workingDirectory = workingDirectory
+			session.promptReadyOnce.Do(func() {
+				close(session.promptReady)
+			})
 		},
 		AltScreen: func(bool) {
 			session.scrollOffset = 0
@@ -226,13 +244,16 @@ func ResolveCommand(name, dir string) (Command, error) {
 	return Command{Name: path, Dir: dir}, nil
 }
 
+const powershellPromptIntegration = `$global:__splitOriginalPrompt = $function:prompt; function global:prompt { $splitPrompt = @(& $global:__splitOriginalPrompt) -join ' '; $splitLocation = $ExecutionContext.SessionState.Path.CurrentLocation; if ($splitLocation.Provider.Name -eq 'FileSystem') { $splitEscape = [string][char]27; $splitPrompt += $splitEscape + ']7;' + $splitLocation.ProviderPath + $splitEscape + '\' }; $splitPrompt }`
+
 func DefaultShell(dir string) Command {
 	if runtime.GOOS == "windows" {
+		args := []string{"-NoLogo", "-NoExit", "-Command", powershellPromptIntegration}
 		if path, err := exec.LookPath("pwsh.exe"); err == nil {
-			return Command{Name: path, Args: []string{"-NoLogo"}, Dir: dir}
+			return Command{Name: path, Args: args, Dir: dir}
 		}
 		if path, err := exec.LookPath("powershell.exe"); err == nil {
-			return Command{Name: path, Args: []string{"-NoLogo"}, Dir: dir}
+			return Command{Name: path, Args: args, Dir: dir}
 		}
 		if commandShell := os.Getenv("COMSPEC"); commandShell != "" {
 			return Command{Name: commandShell, Dir: dir}
@@ -275,6 +296,76 @@ func (s *Session) Title() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.title
+}
+
+// WorkingDirectory returns the most recent filesystem location emitted by the
+// shell prompt. PowerShell does not update its Win32 process cwd after cd, so
+// OSC 7 prompt integration is the authoritative source.
+func (s *Session) WorkingDirectory() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.workingDirectory
+}
+
+// SendCommandWhenReady waits for the first shell prompt before typing a
+// provider resume command. The timeout keeps non-PowerShell fallback shells
+// usable even when they do not emit OSC 7.
+func (s *Session) SendCommandWhenReady(command string) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return
+	}
+	s.workers.Add(1)
+	go func() {
+		defer s.workers.Done()
+		timer := time.NewTimer(8 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-s.promptReady:
+		case <-timer.C:
+		case <-s.closed:
+			return
+		}
+
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.state != Running {
+			return
+		}
+		s.scrollOffset = 0
+		s.selection = terminalSelection{}
+		s.emulator.SendText(command)
+		s.emulator.SendKey(uv.KeyPressEvent(uv.Key{Code: vt.KeyEnter}))
+	}()
+}
+
+func normalizeWorkingDirectory(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(value), "file://") {
+		parsed, err := url.Parse(value)
+		if err != nil {
+			return ""
+		}
+		path, err := url.PathUnescape(parsed.Path)
+		if err != nil {
+			return ""
+		}
+		if parsed.Host != "" && !strings.EqualFold(parsed.Host, "localhost") {
+			value = `\\` + parsed.Host + filepath.FromSlash(path)
+		} else {
+			if runtime.GOOS == "windows" && len(path) >= 3 && path[0] == '/' && path[2] == ':' {
+				path = path[1:]
+			}
+			value = filepath.FromSlash(path)
+		}
+	}
+	if !filepath.IsAbs(value) {
+		return ""
+	}
+	return filepath.Clean(value)
 }
 
 func (s *Session) LiveRender() string {
@@ -424,6 +515,7 @@ func (s *Session) scrollLocked(lines int) bool {
 
 func (s *Session) Close() {
 	s.closeOnce.Do(func() {
+		close(s.closed)
 		s.mu.Lock()
 		process := s.process.Process
 		if process != nil {

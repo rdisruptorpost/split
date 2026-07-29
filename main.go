@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"split/internal/diagnostics"
 	"split/internal/hooks"
 	"split/internal/sessionserver"
 	"split/internal/state"
@@ -25,9 +26,7 @@ func run() error {
 		case "server":
 			return runServerCommand(os.Args[2:])
 		case "hook":
-			// Split no longer uses provider hooks. Keep old installed hooks quiet
-			// while users migrate to terminal-owned live process persistence.
-			return nil
+			return runHookCommand(os.Args[2:])
 		case "hooks":
 			return runHooksCommand(os.Args[2:])
 		}
@@ -41,6 +40,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	ensureSessionHooks(statePath)
 	client, err := sessionserver.ConnectOrStart(cwd, statePath)
 	if err != nil {
 		return err
@@ -55,34 +55,126 @@ func run() error {
 }
 
 func runHooksCommand(arguments []string) error {
-	if len(arguments) != 1 {
-		return errors.New("usage: split hooks uninstall")
-	}
-	if arguments[0] == "install" {
-		fmt.Fprintln(os.Stdout, "Split now persists live terminal processes; provider hooks are no longer required.")
-		return nil
-	}
-	if arguments[0] != "uninstall" {
-		return errors.New("usage: split hooks uninstall")
+	if len(arguments) != 1 || (arguments[0] != "install" && arguments[0] != "uninstall") {
+		return errors.New("usage: split hooks install|uninstall")
 	}
 	paths, err := hooks.DefaultPaths()
 	if err != nil {
 		return err
 	}
-	results, err := hooks.UninstallAll(paths)
+
+	var results []hooks.Result
+	if arguments[0] == "install" {
+		statePath, err := state.DefaultPath()
+		if err != nil {
+			return err
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("locate split executable: %w", err)
+		}
+		results, err = hooks.InstallAll(paths, executable, statePath)
+	} else {
+		results, err = hooks.UninstallAll(paths)
+	}
 	if err != nil {
 		return err
 	}
 	for _, result := range results {
-		status := "not installed"
+		status := "already installed"
+		if arguments[0] == "uninstall" {
+			status = "not installed"
+		}
 		if result.Changed {
-			status = "removed"
+			if arguments[0] == "install" {
+				status = "installed"
+			} else {
+				status = "removed"
+			}
 		}
 		fmt.Fprintf(os.Stdout, "%s: %s (%s)\n", result.Provider, status, result.Path)
 		if result.BackupPath != "" {
 			fmt.Fprintf(os.Stdout, "  backup: %s\n", result.BackupPath)
 		}
 	}
+	return nil
+}
+
+func ensureSessionHooks(statePath string) {
+	paths, err := hooks.DefaultPaths()
+	if err != nil {
+		_ = diagnostics.Append(statePath, "hook-install", "paths_failed", nil, err)
+		fmt.Fprintln(os.Stderr, "split: provider session persistence unavailable:", err)
+		return
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		_ = diagnostics.Append(statePath, "hook-install", "executable_failed", nil, err)
+		fmt.Fprintln(os.Stderr, "split: provider session persistence unavailable:", err)
+		return
+	}
+	results, err := hooks.InstallAll(paths, executable, statePath)
+	if err != nil {
+		_ = diagnostics.Append(
+			statePath,
+			"hook-install",
+			"install_failed",
+			diagnostics.Fields{"executable": executable},
+			err,
+		)
+		// A malformed third-party config must not prevent split itself from
+		// starting. The explicit hooks install command still reports the error.
+		fmt.Fprintln(os.Stderr, "split: provider session persistence unavailable:", err)
+		return
+	}
+	fields := diagnostics.Fields{"executable": executable}
+	for _, result := range results {
+		status := "unchanged"
+		if result.Changed {
+			status = "updated"
+		}
+		fields[result.Provider] = status
+	}
+	_ = diagnostics.Append(statePath, "hook-install", "ready", fields, nil)
+}
+
+func runHookCommand(arguments []string) error {
+	if len(arguments) != 3 || arguments[0] != "session-start" {
+		return nil
+	}
+	provider := arguments[1]
+	statePath := arguments[2]
+	paneID := os.Getenv("SPLIT_PANE_ID")
+	fields := diagnostics.Fields{
+		"provider":        provider,
+		"pane_id":         paneID,
+		"split_env":       os.Getenv("SPLIT_ENV"),
+		"term_program":    os.Getenv("TERM_PROGRAM"),
+		"hook_executable": os.Getenv("SPLIT_HOOK_EXE"),
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		fields["process_cwd"] = cwd
+	}
+	_ = diagnostics.Append(statePath, "hook-helper", "received", fields, nil)
+	if os.Getenv("SPLIT_ENV") != "1" || paneID == "" {
+		_ = diagnostics.Append(
+			statePath,
+			"hook-helper",
+			"skipped",
+			fields,
+			errors.New("split pane environment is incomplete"),
+		)
+		return nil
+	}
+	// The managed wrapper always exits successfully so persistence can never
+	// prevent Codex or Claude from opening. Returning the recorder error here
+	// keeps direct invocation observable for diagnostics and tests.
+	err := hooks.RecordSessionStart(provider, paneID, statePath, os.Stdin)
+	if err != nil {
+		_ = diagnostics.Append(statePath, "hook-helper", "failed", fields, err)
+		return err
+	}
+	_ = diagnostics.Append(statePath, "hook-helper", "completed", fields, nil)
 	return nil
 }
 
@@ -101,10 +193,13 @@ func runServerCommand(arguments []string) error {
 				return err
 			}
 		}
+		_ = diagnostics.Append(statePath, "client", "server_stop_requested", nil, nil)
 		if err := sessionserver.Stop(statePath); err != nil {
+			_ = diagnostics.Append(statePath, "client", "server_stop_failed", nil, err)
 			return err
 		}
-		fmt.Fprintln(os.Stdout, "Split runtime stopped; terminal processes were closed.")
+		_ = diagnostics.Append(statePath, "client", "server_stop_acknowledged", nil, nil)
+		fmt.Fprintln(os.Stdout, "split runtime stopped; terminal processes were closed.")
 		return nil
 	}
 	return errors.New("usage: split server stop [state-path]")

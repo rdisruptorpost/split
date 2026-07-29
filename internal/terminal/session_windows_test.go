@@ -3,7 +3,9 @@
 package terminal
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -86,4 +88,55 @@ func TestPowerShellConPTYInteractiveRoundTrip(t *testing.T) {
 			t.Fatalf("interactive marker not rendered before timeout (state=%v, err=%v, content=%q)", state, stateErr, session.Render())
 		}
 	}
+}
+
+func TestDefaultPowerShellReportsCWDAndAcceptsPromptGatedCommand(t *testing.T) {
+	if _, err := exec.LookPath("powershell.exe"); err != nil {
+		if _, pwshErr := exec.LookPath("pwsh.exe"); pwshErr != nil {
+			t.Skip("PowerShell is not available")
+		}
+	}
+
+	root := t.TempDir()
+	nested := filepath.Join(root, "nested directory")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan Event, 128)
+	session, err := Start("cwd", DefaultShell(root), 80, 24, events)
+	if err != nil {
+		t.Fatalf("start default PowerShell: %v", err)
+	}
+	defer session.Close()
+
+	waitFor := func(description string, condition func() bool) {
+		t.Helper()
+		timer := time.NewTimer(15 * time.Second)
+		defer timer.Stop()
+		for !condition() {
+			select {
+			case <-events:
+			case <-timer.C:
+				state, stateErr := session.State()
+				t.Fatalf("%s before timeout (cwd=%q, state=%v, err=%v, content=%q)",
+					description, session.WorkingDirectory(), state, stateErr, session.Render())
+			}
+		}
+	}
+	waitFor("initial prompt did not report cwd", func() bool {
+		return filepath.Clean(session.WorkingDirectory()) == filepath.Clean(root)
+	})
+
+	quotedNested := strings.ReplaceAll(nested, "'", "''")
+	session.Paste("Set-Location -LiteralPath '" + quotedNested + "'")
+	session.SendKey(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	waitFor("changed prompt did not report cwd", func() bool {
+		return filepath.Clean(session.WorkingDirectory()) == filepath.Clean(nested)
+	})
+
+	const marker = "__SPLIT_PROMPT_READY_OK__"
+	session.SendCommandWhenReady("Write-Output '" + marker + "'")
+	waitFor("prompt-gated command did not run", func() bool {
+		return strings.Contains(session.Render(), marker)
+	})
 }

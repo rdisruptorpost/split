@@ -5,6 +5,7 @@ package agent
 import (
 	"errors"
 	"syscall"
+	"time"
 	"unicode/utf16"
 	"unsafe"
 
@@ -38,6 +39,29 @@ func snapshotProcesses() ([]processInfo, error) {
 			return nil, err
 		}
 	}
+}
+
+func processStartTime(pid uint32) (time.Time, bool) {
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return time.Time{}, false
+	}
+	defer windows.CloseHandle(process)
+
+	var created windows.Filetime
+	var exited windows.Filetime
+	var kernel windows.Filetime
+	var user windows.Filetime
+	if err := windows.GetProcessTimes(
+		process,
+		&created,
+		&exited,
+		&kernel,
+		&user,
+	); err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(0, created.Nanoseconds()), true
 }
 
 func processCommandLine(pid uint32) string {

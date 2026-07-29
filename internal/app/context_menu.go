@@ -100,8 +100,8 @@ func (m *Model) paneContextMenuItems() []paneContextMenuItem {
 		canClose = paneCount > 1 || len(m.tabs) > 1
 	}
 	return []paneContextMenuItem{
-		{label: "Split right", hint: "\u2192", action: paneMenuSplitRight, enabled: active != nil},
-		{label: "Split below", hint: "\u2193", action: paneMenuSplitBelow, enabled: active != nil},
+		{label: "split right", hint: "\u2192", action: paneMenuSplitRight, enabled: active != nil},
+		{label: "split below", hint: "\u2193", action: paneMenuSplitBelow, enabled: active != nil},
 		{label: "Open in new project", hint: "+", action: paneMenuNewProject, enabled: true},
 		{label: "Rename terminal", hint: "r", action: paneMenuRename, enabled: active != nil},
 		{separator: true},

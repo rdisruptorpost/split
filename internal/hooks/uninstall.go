@@ -5,10 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 )
 
-// UninstallAll removes only Split-owned SessionStart handlers and preserves
+// UninstallAll removes only split-owned SessionStart handlers and preserves
 // every unrelated provider setting and hook.
 func UninstallAll(paths Paths) ([]Result, error) {
 	providers := []struct {
@@ -84,7 +83,6 @@ func removeSplitSessionStartHooks(document map[string]any, provider string) (boo
 		return false, errors.New("hooks.SessionStart configuration is not an array")
 	}
 
-	marker := " hook session-start " + provider
 	changed := false
 	groups := make([]any, 0, len(sessionHooks))
 	for _, groupValue := range sessionHooks {
@@ -112,7 +110,8 @@ func removeSplitSessionStartHooks(document map[string]any, provider string) (boo
 			}
 			command, _ := handler["command"].(string)
 			commandWindows, _ := handler["commandWindows"].(string)
-			if strings.Contains(command, marker) || strings.Contains(commandWindows, marker) {
+			if isSplitSessionStartCommand(command, provider) ||
+				isSplitSessionStartCommand(commandWindows, provider) {
 				changed = true
 				continue
 			}

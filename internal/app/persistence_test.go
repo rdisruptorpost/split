@@ -1,9 +1,13 @@
 package app
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -202,5 +206,81 @@ func TestSavedPaneTitlesRestoreAsPlainTerminalLabels(t *testing.T) {
 func TestLayoutPersistenceRejectsMalformedTrees(t *testing.T) {
 	if _, err := decodeLayout([]byte(`{"axis":"columns","first":{"pane_id":"one"}}`)); err == nil {
 		t.Fatal("split with a missing child should be rejected")
+	}
+}
+
+func TestPersistentModelRunsNativeResumeForCapturedAgentSession(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell resume integration is Windows-specific")
+	}
+	fakeBin := t.TempDir()
+	const marker = "__SPLIT_FAKE_CODEX_RESUME__"
+	fakeCodex := filepath.Join(fakeBin, "codex.cmd")
+	if err := os.WriteFile(fakeCodex, []byte("@echo off\r\necho "+marker+" %*\r\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	root := t.TempDir()
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	store, err := state.Open(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := state.Snapshot{
+		ActiveProjectID: "tab-1", SidebarVisible: true, NextProjectNumber: 2,
+		Projects: []state.Project{{
+			ID: "tab-1", Name: "resume", RootPath: root, ActivePaneID: "pane-1",
+			LayoutJSON: []byte(`{"pane_id":"pane-1"}`),
+			Panes: []state.Pane{{
+				ID: "pane-1", Title: "PowerShell", WorkingDirectory: root,
+			}},
+		}},
+	}
+	if err := store.Save(snapshot); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if err := store.UpsertPaneAgentSession("pane-1", "codex", "session-42", root); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	model, err := Open(root, statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := model.panes["pane-1"]
+	if item == nil || item.session == nil {
+		model.Close()
+		t.Fatalf("restored pane did not start: %#v", item)
+	}
+	timer := time.NewTimer(15 * time.Second)
+	defer timer.Stop()
+	for !strings.Contains(item.session.Render(), marker+" resume session-42") {
+		select {
+		case <-model.TerminalEvents():
+		case <-timer.C:
+			content := item.session.Render()
+			model.Close()
+			t.Fatalf("captured Codex session was not resumed: %q", content)
+		}
+	}
+	model.Close()
+
+	store, err = state.Open(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Projects[0].Panes[0].AgentSessionID; got != "session-42" {
+		t.Fatalf("server-style close lost resumable provider session: %q", got)
 	}
 }

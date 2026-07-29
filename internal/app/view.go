@@ -30,7 +30,7 @@ func (m *Model) View() tea.View {
 	if active := m.active(); active != nil && strings.TrimSpace(active.title) != "" {
 		title = active.title
 	}
-	view.WindowTitle = "Split — " + title
+	view.WindowTitle = "split — " + title
 	view.Cursor = m.renderCursor()
 	return view
 }
@@ -78,7 +78,7 @@ func (m *Model) renderCursor() *tea.Cursor {
 
 func (m *Model) render() string {
 	if m.width < 42 || m.height < 12 {
-		message := styles.logo.Render("SPLIT") + "\n\n" +
+		message := styles.logo.Render("split") + "\n\n" +
 			styles.text.Render("The terminal is too small.") + "\n" +
 			styles.muted.Render("Resize to at least 42 × 12.")
 		return placeBlock(message, m.width, m.height)

@@ -15,6 +15,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"split/internal/state"
 )
 
 func TestRuntimeKeepsTerminalAliveAcrossClientDetach(t *testing.T) {
@@ -78,6 +80,246 @@ func TestRuntimeKeepsTerminalAliveAcrossClientDetach(t *testing.T) {
 	}
 }
 
+func TestRuntimePersistsPowerShellDirectoryAcrossExplicitRestart(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "nested workspace")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	endpoint, err := Endpoint(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startRuntime := func() chan error {
+		result := make(chan error, 1)
+		go func() { result <- Run(root, statePath) }()
+		return result
+	}
+	stopRuntime := func(result chan error) {
+		t.Helper()
+		if err := Stop(statePath); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-result:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("runtime did not stop")
+		}
+	}
+	t.Cleanup(func() { _ = Stop(statePath) })
+
+	firstResult := startRuntime()
+	first := dialTestRuntime(t, endpoint)
+	firstEncoder := json.NewEncoder(first)
+	firstDecoder := json.NewDecoder(first)
+	sendTestRequest(t, firstEncoder, request{Version: protocolVersion, Kind: requestAttach})
+	readTestFrame(t, first, firstDecoder, func(value frame) bool { return value.Version == protocolVersion })
+	sendTestRequest(t, firstEncoder, request{Version: protocolVersion, Kind: requestResize, Width: 160, Height: 36})
+	readTestFrame(t, first, firstDecoder, func(value frame) bool { return value.Content != "" })
+	enter := tea.Key{Code: tea.KeyEnter}
+	sendTestRequest(t, firstEncoder, request{Version: protocolVersion, Kind: requestKey, Key: &enter})
+	readTestFrame(t, first, firstDecoder, func(value frame) bool { return value.Content != "" })
+
+	quotedNested := strings.ReplaceAll(nested, "'", "''")
+	const changedMarker = "__SPLIT_CHANGED_CWD__"
+	command := "Set-Location -LiteralPath '" + quotedNested +
+		"'; Write-Output ('" + changedMarker + "' + (Get-Location).Path)"
+	sendTestRequest(t, firstEncoder, request{Version: protocolVersion, Kind: requestPaste, Paste: command})
+	sendTestRequest(t, firstEncoder, request{Version: protocolVersion, Kind: requestKey, Key: &enter})
+	readTestFrame(t, first, firstDecoder, func(value frame) bool {
+		plain := ansi.Strip(value.Content)
+		return strings.Count(plain, changedMarker) >= 2 && strings.Contains(plain, "nested workspace")
+	})
+
+	// This verifies the detached runtime checkpoint, rather than relying only
+	// on the clean-stop snapshot below.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		store, err := state.Open(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, loadErr := store.Load()
+		_ = store.Close()
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		if len(snapshot.Projects) == 1 && len(snapshot.Projects[0].Panes) == 1 &&
+			filepath.Clean(snapshot.Projects[0].Panes[0].WorkingDirectory) == filepath.Clean(nested) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("runtime did not checkpoint cwd %q: %#v", nested, snapshot)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	_ = first.Close()
+	stopRuntime(firstResult)
+
+	secondResult := startRuntime()
+	second := dialTestRuntime(t, endpoint)
+	secondEncoder := json.NewEncoder(second)
+	secondDecoder := json.NewDecoder(second)
+	sendTestRequest(t, secondEncoder, request{Version: protocolVersion, Kind: requestAttach})
+	readTestFrame(t, second, secondDecoder, func(value frame) bool { return value.Version == protocolVersion })
+	sendTestRequest(t, secondEncoder, request{Version: protocolVersion, Kind: requestResize, Width: 160, Height: 36})
+	readTestFrame(t, second, secondDecoder, func(value frame) bool { return value.Content != "" })
+	sendTestRequest(t, secondEncoder, request{Version: protocolVersion, Kind: requestKey, Key: &enter})
+	readTestFrame(t, second, secondDecoder, func(value frame) bool { return value.Content != "" })
+	const restoredMarker = "__SPLIT_RESTORED_CWD__"
+	sendTestRequest(t, secondEncoder, request{
+		Version: protocolVersion,
+		Kind:    requestPaste,
+		Paste:   "Write-Output ('" + restoredMarker + "' + (Get-Location).Path)",
+	})
+	sendTestRequest(t, secondEncoder, request{Version: protocolVersion, Kind: requestKey, Key: &enter})
+	readTestFrame(t, second, secondDecoder, func(value frame) bool {
+		plain := ansi.Strip(value.Content)
+		return strings.Count(plain, restoredMarker) >= 2 && strings.Contains(plain, "nested workspace")
+	})
+	_ = second.Close()
+	stopRuntime(secondResult)
+}
+
+func TestRuntimePreservesExactAgentBindingAcrossStopAndRestartsInAgentDirectory(t *testing.T) {
+	fakeBin := t.TempDir()
+	const marker = "__SPLIT_RUNTIME_EXACT_RESUME__"
+	fakeCodex := filepath.Join(fakeBin, "codex.cmd")
+	if err := os.WriteFile(
+		fakeCodex,
+		[]byte("@echo off\r\necho "+marker+" %CD% %*\r\n"),
+		0o700,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	launchRoot := filepath.Join(t.TempDir(), "split checkout")
+	agentRoot := filepath.Join(t.TempDir(), "PrismLab")
+	for _, directory := range []string{launchRoot, agentRoot} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	endpoint, err := Endpoint(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startRuntime := func() chan error {
+		result := make(chan error, 1)
+		go func() { result <- Run(launchRoot, statePath) }()
+		return result
+	}
+	stopRuntime := func(result chan error) {
+		t.Helper()
+		if err := Stop(statePath); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-result:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("runtime did not stop")
+		}
+	}
+	loadPane := func() state.Pane {
+		t.Helper()
+		store, err := state.Open(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		snapshot, err := store.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(snapshot.Projects) != 1 || len(snapshot.Projects[0].Panes) != 1 {
+			t.Fatalf("unexpected exact-resume snapshot: %#v", snapshot)
+		}
+		return snapshot.Projects[0].Panes[0]
+	}
+	t.Cleanup(func() { _ = Stop(statePath) })
+
+	firstResult := startRuntime()
+	first := dialTestRuntime(t, endpoint)
+	firstEncoder := json.NewEncoder(first)
+	firstDecoder := json.NewDecoder(first)
+	sendTestRequest(t, firstEncoder, request{Version: protocolVersion, Kind: requestAttach})
+	readTestFrame(t, first, firstDecoder, func(value frame) bool { return value.Version == protocolVersion })
+
+	paneID := loadPane().ID
+	store, err := state.Open(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertPaneAgentSession(
+		paneID,
+		"codex",
+		"019f-prismlab-exact-session",
+		agentRoot,
+	); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Match the user's sequence: detach the UI while the runtime remains live,
+	// then explicitly stop the server.
+	prefix := tea.Key{Code: 'b', Mod: tea.ModCtrl}
+	sendTestRequest(t, firstEncoder, request{Version: protocolVersion, Kind: requestKey, Key: &prefix})
+	readTestFrame(t, first, firstDecoder, func(value frame) bool { return value.Content != "" })
+	quit := tea.Key{Code: 'q', Text: "q"}
+	sendTestRequest(t, firstEncoder, request{Version: protocolVersion, Kind: requestKey, Key: &quit})
+	readTestFrame(t, first, firstDecoder, func(value frame) bool { return value.Detach })
+	_ = first.Close()
+	stopRuntime(firstResult)
+
+	stoppedPane := loadPane()
+	if stoppedPane.AgentProvider != "codex" ||
+		stoppedPane.AgentSessionID != "019f-prismlab-exact-session" ||
+		filepath.Clean(stoppedPane.AgentDirectory) != filepath.Clean(agentRoot) {
+		t.Fatalf("server stop lost exact cross-directory binding: %#v", stoppedPane)
+	}
+
+	secondResult := startRuntime()
+	second := dialTestRuntime(t, endpoint)
+	secondEncoder := json.NewEncoder(second)
+	secondDecoder := json.NewDecoder(second)
+	sendTestRequest(t, secondEncoder, request{Version: protocolVersion, Kind: requestAttach})
+	readTestFrame(t, second, secondDecoder, func(value frame) bool {
+		plain := ansi.Strip(value.Content)
+		return strings.Contains(plain, marker) &&
+			strings.Contains(plain, filepath.Base(agentRoot)) &&
+			strings.Contains(plain, "resume 019f-prismlab-exact-session")
+	})
+	logContent, err := os.ReadFile(filepath.Join(filepath.Dir(statePath), "runtime.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, eventName := range []string{
+		`"event":"stop_persisted"`,
+		`"event":"pane_restore_loaded"`,
+		`"event":"agent_resume_scheduled"`,
+		`"resume_session_id":"019f-prismlab-exact-session"`,
+	} {
+		if !strings.Contains(string(logContent), eventName) {
+			t.Fatalf("runtime diagnostic log is missing %q: %s", eventName, logContent)
+		}
+	}
+	_ = second.Close()
+	stopRuntime(secondResult)
+}
 func TestRuntimeDiscoversCodexAndTracksWorkingToDone(t *testing.T) {
 	root := t.TempDir()
 	statePath := filepath.Join(t.TempDir(), "state.db")
@@ -123,6 +365,25 @@ func TestRuntimeDiscoversCodexAndTracksWorkingToDone(t *testing.T) {
 	readTestFrame(t, connection, decoder, func(value frame) bool {
 		return strings.Contains(ansi.Strip(value.Content), "Codex · working")
 	})
+	store, err := state.Open(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.Load()
+	if closeErr := store.Close(); err == nil && closeErr != nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Projects) != 1 || len(snapshot.Projects[0].Panes) != 1 {
+		t.Fatalf("unexpected detected-agent snapshot: %#v", snapshot)
+	}
+	binding := snapshot.Projects[0].Panes[0]
+	if binding.AgentProvider != "" || binding.AgentSessionID != "" ||
+		binding.AgentDirectory != "" {
+		t.Fatalf("process detection invented an ambiguous Codex binding: %#v", binding)
+	}
 	escape := tea.Key{Code: tea.KeyEscape}
 	sendTestRequest(t, encoder, request{Version: protocolVersion, Kind: requestKey, Key: &escape})
 	readTestFrame(t, connection, decoder, func(value frame) bool {
@@ -142,6 +403,23 @@ func TestRuntimeDiscoversCodexAndTracksWorkingToDone(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("runtime did not stop after agent detection test")
+	}
+
+	store, err = state.Open(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = store.Load()
+	if closeErr := store.Close(); err == nil && closeErr != nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding = snapshot.Projects[0].Panes[0]
+	if binding.AgentProvider != "" || binding.AgentSessionID != "" ||
+		binding.AgentDirectory != "" {
+		t.Fatalf("server stop invented an ambiguous Codex binding: %#v", binding)
 	}
 }
 

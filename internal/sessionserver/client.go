@@ -105,7 +105,7 @@ func (c *Client) View() tea.View {
 	if current.Version == protocolVersion {
 		return current.view()
 	}
-	view := tea.NewView("Connecting to the Split runtime\u2026")
+	view := tea.NewView("Connecting to the split runtime\u2026")
 	view.AltScreen = true
 	return view
 }

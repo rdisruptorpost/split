@@ -5,13 +5,13 @@ import (
 	"testing"
 )
 
-func TestLegacyHookCommandIsSilentNoop(t *testing.T) {
+func TestMalformedLegacyHookCommandRemainsSilent(t *testing.T) {
 	oldArguments := os.Args
 	os.Args = []string{"split", "hook", "session-start", "codex"}
 	defer func() { os.Args = oldArguments }()
 
 	if err := run(); err != nil {
-		t.Fatalf("legacy provider hooks should be harmless no-ops: %v", err)
+		t.Fatalf("malformed legacy provider hooks should remain harmless: %v", err)
 	}
 }
 

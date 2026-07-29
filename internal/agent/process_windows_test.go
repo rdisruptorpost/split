@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWindowsSnapshotAndCommandLineIncludeCurrentProcess(t *testing.T) {
@@ -26,5 +27,16 @@ func TestWindowsSnapshotAndCommandLineIncludeCurrentProcess(t *testing.T) {
 	}
 	if commandLine := processCommandLine(pid); !strings.Contains(commandLine, "agent.test") {
 		t.Fatalf("unexpected current process command line: %q", commandLine)
+	}
+	startedAt, ok := processStartTime(pid)
+	if !ok {
+		t.Fatal("could not read current process start time")
+	}
+	now := time.Now()
+	if startedAt.After(now.Add(time.Second)) {
+		t.Fatalf("process start time %v is in the future", startedAt)
+	}
+	if now.Sub(startedAt) > 10*time.Minute {
+		t.Fatalf("process start time %v is unexpectedly old", startedAt)
 	}
 }
