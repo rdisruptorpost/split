@@ -96,6 +96,7 @@ type Model struct {
 	activeTab         int
 	panes             map[string]*pane
 	agents            map[string]agent.State
+	providerUsage     map[string]state.ProviderUsage
 	agentTracker      *agent.Tracker
 	codexSessions     codexSessionResolver
 	codexCaptures     map[string]codexCaptureAttempt
@@ -138,6 +139,7 @@ func newModel(root string) *Model {
 		sidebarSize:       sidebarWidth,
 		panes:             make(map[string]*pane),
 		agents:            make(map[string]agent.State),
+		providerUsage:     make(map[string]state.ProviderUsage, 2),
 		agentTracker:      agent.NewTracker(),
 		codexSessions:     agent.NewCodexSessionResolver(),
 		codexCaptures:     make(map[string]codexCaptureAttempt),

@@ -51,6 +51,10 @@ func InstallAll(paths Paths, executable, statePath string) ([]Result, error) {
 	if err := writeSessionHookScript(scriptPath); err != nil {
 		return nil, err
 	}
+	statusLinePath := filepath.Join(filepath.Dir(statePath), "claude-statusline.ps1")
+	if err := writeClaudeStatusLineScript(statusLinePath); err != nil {
+		return nil, err
+	}
 	providers := []struct {
 		name string
 		path string
@@ -60,7 +64,12 @@ func InstallAll(paths Paths, executable, statePath string) ([]Result, error) {
 	}
 	results := make([]Result, 0, len(providers))
 	for _, provider := range providers {
-		result, err := installOne(provider.path, provider.name, scriptPath)
+		result, err := installOne(
+			provider.path,
+			provider.name,
+			scriptPath,
+			statusLinePath,
+		)
 		if err != nil {
 			return results, fmt.Errorf("install %s hook: %w", provider.name, err)
 		}
@@ -69,7 +78,9 @@ func InstallAll(paths Paths, executable, statePath string) ([]Result, error) {
 	return results, nil
 }
 
-func installOne(path, provider, scriptPath string) (Result, error) {
+func installOne(
+	path, provider, scriptPath, statusLinePath string,
+) (Result, error) {
 	result := Result{Provider: provider, Path: path}
 	document := make(map[string]any)
 	original, err := os.ReadFile(path)
@@ -96,6 +107,12 @@ func installOne(path, provider, scriptPath string) (Result, error) {
 	changed, err := mergeSessionStartHook(document, provider, command, commandWindows)
 	if err != nil {
 		return result, err
+	}
+	if provider == "claude" {
+		statusLineCommand := `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ` +
+			quoteExecutable(statusLinePath)
+		statusLineChanged := mergeClaudeStatusLine(document, statusLineCommand)
+		changed = changed || statusLineChanged
 	}
 	if !changed {
 		return result, nil
@@ -190,8 +207,45 @@ func mergeSessionStartHook(document map[string]any, provider, command, commandWi
 	return true, nil
 }
 
+// mergeClaudeStatusLine installs the collector only when Claude's single
+// status-line slot is free. An existing user-defined status line is preserved
+// exactly instead of being silently replaced.
+func mergeClaudeStatusLine(document map[string]any, command string) bool {
+	value, exists := document["statusLine"]
+	if !exists {
+		document["statusLine"] = map[string]any{
+			"type":            "command",
+			"command":         command,
+			"refreshInterval": 60,
+		}
+		return true
+	}
+	statusLine, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	existingCommand, _ := statusLine["command"].(string)
+	if !isSplitClaudeStatusLineCommand(existingCommand) {
+		return false
+	}
+	changed := false
+	if existingCommand != command {
+		statusLine["command"] = command
+		changed = true
+	}
+	if statusType, _ := statusLine["type"].(string); statusType != "command" {
+		statusLine["type"] = "command"
+		changed = true
+	}
+	return changed
+}
+
 func quoteExecutable(path string) string {
 	return `"` + path + `"`
+}
+
+func isSplitClaudeStatusLineCommand(command string) bool {
+	return strings.Contains(strings.ToLower(command), "claude-statusline.ps1")
 }
 
 func isSplitSessionStartCommand(command, provider string) bool {
@@ -294,6 +348,45 @@ try {
 }
 exit 0
 `
+
+const claudeStatusLineScript = `$ErrorActionPreference = 'SilentlyContinue'
+
+$splitPayload = [Console]::In.ReadToEnd()
+if ($env:SPLIT_ENV -ne '1' -or
+    [string]::IsNullOrWhiteSpace($env:SPLIT_PANE_ID) -or
+    [string]::IsNullOrWhiteSpace($env:SPLIT_STATE_PATH) -or
+    [string]::IsNullOrWhiteSpace($env:SPLIT_HOOK_EXE)) {
+    exit 0
+}
+
+$splitPreviousOutputEncoding = $OutputEncoding
+try {
+    $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $splitPayload | & $env:SPLIT_HOOK_EXE hook provider-usage claude $env:SPLIT_STATE_PATH 2>$null | Out-Null
+} catch {
+} finally {
+    $OutputEncoding = $splitPreviousOutputEncoding
+}
+exit 0
+`
+
+func writeClaudeStatusLineScript(path string) error {
+	content := []byte(claudeStatusLineScript)
+	existing, err := os.ReadFile(path)
+	if err == nil && string(existing) == string(content) {
+		return nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read managed Claude status line: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create managed Claude status-line directory: %w", err)
+	}
+	if err := replaceFile(path, content); err != nil {
+		return fmt.Errorf("write managed Claude status line: %w", err)
+	}
+	return nil
+}
 
 func writeSessionHookScript(path string) error {
 	content := []byte(sessionHookScript)

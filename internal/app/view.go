@@ -427,16 +427,8 @@ func (m *Model) renderStatus(width int) string {
 		left = badge + styles.status.Render(" "+m.notice)
 	}
 
-	active := m.active()
-	right := ""
-	if active != nil {
-		right = fmt.Sprintf(" %d pane", len(active.root.Leaves()))
-		if len(active.root.Leaves()) != 1 {
-			right += "s"
-		}
-		right += "  " + time.Now().Format("15:04") + " "
-	}
-	right = styles.status.Render(right)
+	now := time.Now()
+	right := m.renderStatusRight(now)
 
 	available := width - ansi.StringWidth(right)
 	if available < 1 {
@@ -444,6 +436,34 @@ func (m *Model) renderStatus(width int) string {
 	}
 	left = fitLine(left, available)
 	return fitLine(left+right, width)
+}
+
+func (m *Model) renderStatusRight(now time.Time) string {
+	return styles.status.Render(" ") +
+		m.renderProviderUsage("Cdx", "codex", now) +
+		styles.status.Render("  ") +
+		m.renderProviderUsage("Cl", "claude", now) +
+		styles.status.Render(" ")
+}
+
+func (m *Model) renderProviderUsage(label, provider string, now time.Time) string {
+	prefix := styles.status.Render(label + " ")
+	remaining, available := m.providerRemaining(provider, now)
+	if !available {
+		return prefix + styles.status.Render("—")
+	}
+	valueColor := palette.text
+	switch {
+	case remaining <= 10:
+		valueColor = palette.red
+	case remaining <= 25:
+		valueColor = palette.yellow
+	}
+	value := lipgloss.NewStyle().
+		Foreground(valueColor).
+		Background(palette.surface).
+		Render(fmt.Sprintf("%d%% left", remaining))
+	return prefix + value
 }
 
 func fitLine(value string, width int) string {

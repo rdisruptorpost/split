@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -11,6 +12,7 @@ import (
 	"split/internal/hooks"
 	"split/internal/sessionserver"
 	"split/internal/state"
+	"split/internal/usage"
 )
 
 func main() {
@@ -139,6 +141,9 @@ func ensureSessionHooks(statePath string) {
 }
 
 func runHookCommand(arguments []string) error {
+	if len(arguments) == 3 && arguments[0] == "provider-usage" {
+		return runProviderUsageHook(arguments[1], arguments[2])
+	}
 	if len(arguments) != 3 || arguments[0] != "session-start" {
 		return nil
 	}
@@ -178,9 +183,46 @@ func runHookCommand(arguments []string) error {
 	return nil
 }
 
+func runProviderUsageHook(provider, statePath string) error {
+	if provider != "claude" || os.Getenv("SPLIT_ENV") != "1" ||
+		os.Getenv("SPLIT_PANE_ID") == "" || statePath == "" {
+		return nil
+	}
+	value, available, err := usage.ParseClaudeStatusLine(os.Stdin, time.Now())
+	if err != nil {
+		_ = diagnostics.Append(
+			statePath,
+			"usage",
+			"claude_status_line_failed",
+			diagnostics.Fields{"provider": provider},
+			err,
+		)
+		return err
+	}
+	if !available {
+		return nil
+	}
+	store, err := state.Open(statePath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err := store.UpsertProviderUsage(value); err != nil {
+		_ = diagnostics.Append(
+			statePath,
+			"usage",
+			"claude_cache_write_failed",
+			diagnostics.Fields{"provider": provider},
+			err,
+		)
+		return err
+	}
+	return nil
+}
+
 func runServerCommand(arguments []string) error {
 	if len(arguments) == 3 && arguments[0] == "run" {
-		return sessionserver.Run(arguments[1], arguments[2])
+		return sessionserver.RunWithUsage(arguments[1], arguments[2])
 	}
 	if len(arguments) >= 1 && len(arguments) <= 2 && arguments[0] == "stop" {
 		statePath := ""

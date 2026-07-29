@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -17,7 +18,7 @@ import (
 	"split/internal/diagnostics"
 )
 
-const schemaVersion = 7
+const schemaVersion = 8
 
 type Snapshot struct {
 	ActiveProjectID   string
@@ -43,6 +44,13 @@ type Pane struct {
 	AgentProvider    string
 	AgentSessionID   string
 	AgentDirectory   string
+}
+
+type ProviderUsage struct {
+	Provider    string
+	UsedPercent float64
+	ResetsAt    time.Time
+	UpdatedAt   time.Time
 }
 
 type Store struct {
@@ -310,6 +318,17 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("add persistent sidebar width: %w", err)
 		}
 		version = 7
+	}
+	if version < 8 {
+		if _, err := tx.Exec(`CREATE TABLE provider_usage (
+			provider TEXT PRIMARY KEY CHECK (provider IN ('codex', 'claude')),
+			used_percent REAL NOT NULL CHECK (used_percent >= 0 AND used_percent <= 100),
+			resets_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`); err != nil {
+			return fmt.Errorf("create provider usage cache: %w", err)
+		}
+		version = 8
 	}
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", schemaVersion)); err != nil {
 		return fmt.Errorf("record state schema version: %w", err)
@@ -659,6 +678,83 @@ func (s *Store) ClearPaneAgentSession(paneID string) error {
 	}
 	_ = diagnostics.Append(s.path, "state", "agent_binding_cleared", fields, nil)
 	return nil
+}
+
+// UpsertProviderUsage durably caches a provider's seven-day usage window.
+// It is independent of workspace snapshots because Claude's status-line
+// helper writes from a separate process while the split runtime is alive.
+func (s *Store) UpsertProviderUsage(value ProviderUsage) error {
+	value.Provider = strings.ToLower(strings.TrimSpace(value.Provider))
+	switch value.Provider {
+	case "codex", "claude":
+	default:
+		return fmt.Errorf("unsupported usage provider %q", value.Provider)
+	}
+	if math.IsNaN(value.UsedPercent) || math.IsInf(value.UsedPercent, 0) ||
+		value.UsedPercent < 0 || value.UsedPercent > 100 {
+		return fmt.Errorf("provider usage percentage is invalid: %v", value.UsedPercent)
+	}
+	if value.UpdatedAt.IsZero() {
+		value.UpdatedAt = time.Now()
+	}
+	resetsAt := int64(0)
+	if !value.ResetsAt.IsZero() {
+		resetsAt = value.ResetsAt.UnixMilli()
+	}
+	_, err := s.db.Exec(`INSERT INTO provider_usage
+			(provider, used_percent, resets_at, updated_at)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT(provider) DO UPDATE SET
+			used_percent = excluded.used_percent,
+			resets_at = excluded.resets_at,
+			updated_at = excluded.updated_at
+			WHERE excluded.updated_at >= provider_usage.updated_at`,
+		value.Provider,
+		value.UsedPercent,
+		resetsAt,
+		value.UpdatedAt.UnixMilli(),
+	)
+	if err != nil {
+		return fmt.Errorf("save provider usage: %w", err)
+	}
+	return nil
+}
+
+// LoadProviderUsage reads the tiny provider usage cache without touching the
+// workspace snapshot or pane/session rows.
+func (s *Store) LoadProviderUsage() (map[string]ProviderUsage, error) {
+	rows, err := s.db.Query(`SELECT provider, used_percent, resets_at, updated_at
+		FROM provider_usage`)
+	if err != nil {
+		return nil, fmt.Errorf("load provider usage: %w", err)
+	}
+	defer rows.Close()
+
+	values := make(map[string]ProviderUsage, 2)
+	for rows.Next() {
+		var value ProviderUsage
+		var resetsAt int64
+		var updatedAt int64
+		if err := rows.Scan(
+			&value.Provider,
+			&value.UsedPercent,
+			&resetsAt,
+			&updatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan provider usage: %w", err)
+		}
+		if resetsAt > 0 {
+			value.ResetsAt = time.UnixMilli(resetsAt)
+		}
+		if updatedAt > 0 {
+			value.UpdatedAt = time.UnixMilli(updatedAt)
+		}
+		values[value.Provider] = value
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate provider usage: %w", err)
+	}
+	return values, nil
 }
 
 type legacySessionEvent struct {

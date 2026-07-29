@@ -9,6 +9,7 @@ Every pane is an ordinary PowerShell terminal: click a pane and type the same co
 - Bubble Tea v2 interface with a neutral, high-contrast graphite theme;
 - sidebar-only project switching with a continuous selected-row highlight, right-click rename/close actions, and a clickable `+ New project` row;
 - nested Codex and Claude rows with loading/working spinners, blocked alerts, completion ticks, interrupted turns, idle markers, and exited markers;
+- compact Codex and Claude seven-day usage remaining in the bottom-right footer;
 - recursive split-tree layouts with movement, closing, and automatic balancing;
 - keyboard prefix controls plus a hoverable right-click pane menu;
 - one-click mouse focus, left-drag terminal selection with clipboard copy, and per-pane mouse-wheel scrollback;
@@ -46,13 +47,19 @@ Get-Content "$env:LOCALAPPDATA\split\runtime.log" -Tail 200
 
 For an agent that will resume after an explicit server restart, the useful event chain begins with either `hook-wrapper/invoked` plus `session-capture/binding_written`, or the Codex pre-prompt fallback `model/codex_session_correlated`. It then continues through `server/stop_persisted`, `model/pane_restore_loaded`, and `model/agent_resume_scheduled`. A missing event identifies which boundary failed.
 
-On launch, split installs or updates a small SessionStart handler in the Codex and Claude configuration. It is inert outside a split pane, forwards only provider, session ID, and cwd into `state.db`, and always exits successfully so persistence can never block an agent from opening. Codex asks you to trust new or changed user hooks; use `/hooks` inside Codex once to approve the exact-ID handler. Codex 0.145 runs its pending SessionStart handler when the first turn begins rather than when the picker finishes loading. To cover the period before that first prompt, split reads Codex's local `logs_*.sqlite` database in read-only mode and accepts only a fresh UUID attached to the detected Codex PID. The normal trusted hook remains authoritative once it runs. The command below can reinstall the handler explicitly:
+On launch, split installs or updates a small SessionStart handler in the Codex and Claude configuration. It is inert outside a split pane, forwards only provider, session ID, and cwd into `state.db`, and always exits successfully so persistence can never block an agent from opening. When Claude's single `statusLine` slot is free, split also installs an empty-output callback that caches Claude's official seven-day rate-limit fields; an existing custom status line is preserved. Codex asks you to trust new or changed user hooks; use `/hooks` inside Codex once to approve the exact-ID handler. Codex 0.145 runs its pending SessionStart handler when the first turn begins rather than when the picker finishes loading. To cover the period before that first prompt, split reads Codex's local `logs_*.sqlite` database in read-only mode and accepts only a fresh UUID attached to the detected Codex PID. The normal trusted hook remains authoritative once it runs. The command below can reinstall the handlers explicitly:
 
 ```powershell
 .\split.next.exe hooks install
 ```
 
 To remove only the split-owned handlers while preserving every unrelated Codex and Claude setting, run `hooks uninstall`.
+
+## Weekly usage footer
+
+The bottom-right status reads like `Cdx 72% left  Cl 44% left`. `Cdx` comes from the signed-in Codex app-server `account/rateLimits/read` endpoint. `Cl` comes from Claude Code's `rate_limits.seven_day` status-line input after the first Claude response. Both values show allowance remaining rather than consumed. A provider displays `—` when its subscription window is unavailable or expired; API-key accounts may not expose a weekly plan window.
+
+Values are cached in SQLite, so the last valid window appears immediately after a split restart. Codex refreshes once per minute in the hidden runtime. Claude refreshes on Claude events and at least once per minute while a Claude session is open in split.
 
 ## Persistence model
 
@@ -62,13 +69,14 @@ split stores durable workspace metadata in `%LOCALAPPDATA%\split\state.db` using
 - sidebar visibility and focused pane;
 - every pane's custom title and latest PowerShell working directory;
 - the full split tree and ratios;
-- the native session ID and launch directory for an active Codex or Claude process.
+- the native session ID and launch directory for an active Codex or Claude process;
+- the latest valid Codex and Claude seven-day usage windows and reset times.
 
 PowerShell emits an invisible working-directory signal at every prompt, and the runtime checkpoints changes to SQLite once per second even with no UI client attached. The background runtime owns the live ConPTY handles, terminal emulators, and child processes, so a normal detach/reconnect still returns to the exact live terminal.
 
 An explicit `server stop`, process crash, sign-out, or reboot necessarily ends those OS processes. On the next launch, split creates fresh PowerShell terminals at their saved directories and automatically runs `codex resume <session-id>` or `claude --resume <session-id>` only when an exact provider session ID was captured for that pane. Other terminal programs—and agents whose exact ID was not captured—restart as ordinary PowerShell panes.
 
-`state.db` is the sole durable metadata store. On the first launch of this version, the legacy `%LOCALAPPDATA%\Split` directory is safely renamed to lowercase `%LOCALAPPDATA%\split`; valid records from the old `session-events` JSON spool are imported, ambiguous last-session markers are discarded, and both obsolete JSON directories are removed. `session-hook.ps1` is managed integration code rather than a second data store; `state.db-wal` and `state.db-shm` are normal temporary SQLite companion files.
+`state.db` is the sole durable metadata store. On the first launch of this version, the legacy `%LOCALAPPDATA%\Split` directory is safely renamed to lowercase `%LOCALAPPDATA%\split`; valid records from the old `session-events` JSON spool are imported, ambiguous last-session markers are discarded, and both obsolete JSON directories are removed. `session-hook.ps1` and `claude-statusline.ps1` are managed integration code rather than secondary data stores; `state.db-wal` and `state.db-shm` are normal temporary SQLite companion files.
 
 ## Controls
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestStoreRoundTripPreservesWorkspaceMetadata(t *testing.T) {
@@ -398,5 +399,53 @@ func TestMigrateLegacyDefaultDirectoryPreservesFilesAndLowercasesName(t *testing
 		if string(content) != want {
 			t.Fatalf("migrated %s = %q, want %q", name, content, want)
 		}
+	}
+}
+
+func TestProviderUsageCacheSurvivesWorkspaceSavesAndIgnoresOlderWrites(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	newer := ProviderUsage{
+		Provider:    "codex",
+		UsedPercent: 28.4,
+		ResetsAt:    time.UnixMilli(1_800_100_000_000),
+		UpdatedAt:   time.UnixMilli(1_800_000_002_000),
+	}
+	if err := store.UpsertProviderUsage(newer); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertProviderUsage(ProviderUsage{
+		Provider:    "codex",
+		UsedPercent: 99,
+		UpdatedAt:   time.UnixMilli(1_800_000_001_000),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := Snapshot{
+		ActiveProjectID: "one", SidebarVisible: true, SidebarWidth: 24, NextProjectNumber: 2,
+		Projects: []Project{{
+			ID: "one", Name: "one", RootPath: `C:\one`, ActivePaneID: "pane-1",
+			LayoutJSON: []byte(`{"pane_id":"pane-1"}`),
+			Panes: []Pane{{
+				ID: "pane-1", Title: "PowerShell", WorkingDirectory: `C:\one`,
+			}},
+		}},
+	}
+	if err := store.Save(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.LoadProviderUsage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, exists := loaded["codex"]
+	if !exists || got.UsedPercent != newer.UsedPercent ||
+		!got.ResetsAt.Equal(newer.ResetsAt) || !got.UpdatedAt.Equal(newer.UpdatedAt) {
+		t.Fatalf("cached Codex usage = %#v, want %#v", got, newer)
 	}
 }

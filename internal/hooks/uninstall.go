@@ -7,8 +7,8 @@ import (
 	"os"
 )
 
-// UninstallAll removes only split-owned SessionStart handlers and preserves
-// every unrelated provider setting and hook.
+// UninstallAll removes only split-owned SessionStart handlers and Claude
+// status-line integration while preserving every unrelated provider setting.
 func UninstallAll(paths Paths) ([]Result, error) {
 	providers := []struct {
 		name string
@@ -45,6 +45,9 @@ func uninstallOne(path, provider string) (Result, error) {
 	if err != nil {
 		return result, err
 	}
+	if provider == "claude" && removeSplitClaudeStatusLine(document) {
+		changed = true
+	}
 	if !changed {
 		return result, nil
 	}
@@ -63,6 +66,23 @@ func uninstallOne(path, provider string) (Result, error) {
 	result.Changed = true
 	result.BackupPath = backupPath
 	return result, nil
+}
+
+func removeSplitClaudeStatusLine(document map[string]any) bool {
+	value, exists := document["statusLine"]
+	if !exists {
+		return false
+	}
+	statusLine, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	command, _ := statusLine["command"].(string)
+	if !isSplitClaudeStatusLineCommand(command) {
+		return false
+	}
+	delete(document, "statusLine")
+	return true
 }
 
 func removeSplitSessionStartHooks(document map[string]any, provider string) (bool, error) {

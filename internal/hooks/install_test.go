@@ -48,6 +48,14 @@ func TestInstallAllPreservesExistingHooksAndIsIdempotent(t *testing.T) {
 		strings.Contains(string(managedScript), `C:\Program Files\split\split.exe`) {
 		t.Fatalf("managed hook should use the pane executable and structured diagnostics: %s", managedScript)
 	}
+	managedStatusLine, err := os.ReadFile(filepath.Join(directory, "claude-statusline.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(managedStatusLine), "provider-usage claude") ||
+		!strings.Contains(string(managedStatusLine), "SPLIT_STATE_PATH") {
+		t.Fatalf("managed Claude status line does not forward usage safely: %s", managedStatusLine)
+	}
 	for _, result := range results {
 		if !result.Changed || result.BackupPath == "" {
 			t.Fatalf("expected changed file with backup: %#v", result)
@@ -64,6 +72,11 @@ func TestInstallAllPreservesExistingHooksAndIsIdempotent(t *testing.T) {
 		if result.Provider == "codex" &&
 			(!strings.Contains(string(content), "commandWindows") || !strings.Contains(string(content), "powershell.exe")) {
 			t.Fatalf("Codex hook is missing its PowerShell Windows override: %s", content)
+		}
+		if result.Provider == "claude" &&
+			(!strings.Contains(string(content), `"statusLine"`) ||
+				!strings.Contains(string(content), "claude-statusline.ps1")) {
+			t.Fatalf("Claude usage status line was not installed: %s", content)
 		}
 		var parsed map[string]any
 		if err := json.Unmarshal(content, &parsed); err != nil {
@@ -121,6 +134,7 @@ func TestUninstallAllRemovesOnlySplitHooks(t *testing.T) {
 			t.Fatal(err)
 		}
 		if strings.Contains(string(content), "session-hook.ps1") ||
+			strings.Contains(string(content), "claude-statusline.ps1") ||
 			strings.Contains(string(content), " hook session-start "+result.Provider) {
 			t.Fatalf("split hook remains after uninstall: %s", content)
 		}
@@ -170,5 +184,45 @@ func TestInstallAllUpgradesLegacyExecutableHooksInPlace(t *testing.T) {
 			!strings.Contains(string(content), "session-hook.ps1") {
 			t.Fatalf("legacy hook was not upgraded in place: %s", content)
 		}
+	}
+}
+
+func TestInstallAndUninstallPreserveCustomClaudeStatusLine(t *testing.T) {
+	directory := t.TempDir()
+	paths := Paths{
+		Codex:  filepath.Join(directory, "codex", "hooks.json"),
+		Claude: filepath.Join(directory, "claude", "settings.json"),
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.Claude), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	custom := `{"theme":"dark","statusLine":{"type":"command","command":"my-status-tool --compact","padding":2}}`
+	if err := os.WriteFile(paths.Claude, []byte(custom), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstallAll(
+		paths,
+		`C:\Program Files\split\split.exe`,
+		filepath.Join(directory, "state.db"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(paths.Claude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "my-status-tool --compact") ||
+		strings.Contains(string(content), "claude-statusline.ps1") {
+		t.Fatalf("custom Claude status line was replaced: %s", content)
+	}
+	if _, err := UninstallAll(paths); err != nil {
+		t.Fatal(err)
+	}
+	content, err = os.ReadFile(paths.Claude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "my-status-tool --compact") {
+		t.Fatalf("custom Claude status line was removed: %s", content)
 	}
 }

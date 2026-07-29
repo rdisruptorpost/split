@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"split/internal/diagnostics"
 	"split/internal/layout"
@@ -36,6 +37,7 @@ func Open(root, statePath string) (*Model, error) {
 	}
 	model := newModel(root)
 	model.store = store
+	model.RefreshProviderUsage(time.Now())
 
 	snapshot, err := store.Load()
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 	"split/internal/diagnostics"
 	"split/internal/state"
 	"split/internal/terminal"
+	"split/internal/usage"
 )
 
 type runtimePeer struct {
@@ -34,6 +35,16 @@ type peerRequest struct {
 // app model, SQLite connection, terminal emulators, ConPTY handles, and child
 // processes until an explicit stop request arrives.
 func Run(root, statePath string) error {
+	return run(root, statePath, false)
+}
+
+// RunWithUsage starts the production runtime with supported provider usage
+// collectors. Keeping Run collector-free makes transport tests deterministic.
+func RunWithUsage(root, statePath string) error {
+	return run(root, statePath, true)
+}
+
+func run(root, statePath string, enableUsage bool) error {
 	_ = diagnostics.Append(
 		statePath,
 		"server",
@@ -64,6 +75,13 @@ func Run(root, statePath string) error {
 		return err
 	}
 	defer model.Close()
+	var usageSource usage.Source
+	var usageEvents <-chan usage.Event
+	if enableUsage {
+		usageSource = usage.StartCodexMonitor()
+		usageEvents = usageSource.Events()
+		defer usageSource.Close()
+	}
 	_ = diagnostics.Append(
 		statePath,
 		"server",
@@ -81,6 +99,8 @@ func Run(root, statePath string) error {
 	lastFrame := time.Time{}
 	lastAgentScan := time.Time{}
 	lastMetadataSync := time.Time{}
+	lastUsageSync := time.Time{}
+	lastUsageError := ""
 	dirty := false
 	var pendingClipboard *string
 	ticker := time.NewTicker(time.Second / 60)
@@ -210,6 +230,29 @@ func Run(root, statePath string) error {
 				dirty = true
 			}
 
+		case event, open := <-usageEvents:
+			if !open {
+				usageEvents = nil
+				continue
+			}
+			if event.Err != nil {
+				if message := event.Err.Error(); message != lastUsageError {
+					lastUsageError = message
+					_ = diagnostics.Append(
+						statePath,
+						"usage",
+						"codex_collector_failed",
+						nil,
+						event.Err,
+					)
+				}
+				continue
+			}
+			lastUsageError = ""
+			if model.ApplyProviderUsage(event.Usage) {
+				dirty = true
+			}
+
 		case event := <-model.TerminalEvents():
 			events := []terminal.Event{event}
 			for len(events) < 512 {
@@ -240,6 +283,12 @@ func Run(root, statePath string) error {
 			if now.Sub(lastMetadataSync) >= time.Second {
 				lastMetadataSync = now
 				if model.SyncTerminalMetadata() {
+					dirty = true
+				}
+			}
+			if now.Sub(lastUsageSync) >= time.Second {
+				lastUsageSync = now
+				if model.RefreshProviderUsage(now) {
 					dirty = true
 				}
 			}
