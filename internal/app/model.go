@@ -369,10 +369,9 @@ func (m *Model) splitActive(axis layout.Axis) {
 		return
 	}
 	active.activePane = item.id
-	layout.Equalize(active.root)
 	m.mode = modeNavigate
 	m.focus = focusPanes
-	m.notice = "Created and balanced a new PowerShell pane"
+	m.notice = "Split the focused pane with a new PowerShell terminal"
 	m.resizeActivePanes()
 	m.persist()
 }
@@ -441,11 +440,10 @@ func (m *Model) closeActivePane() {
 	}
 	active.root = root
 	m.closePane(oldPaneID)
-	layout.Equalize(active.root)
 	active.activePane = active.root.Leaves()[0]
 	m.mode = modeNavigate
 	m.focus = focusPanes
-	m.notice = "Closed and rebalanced pane"
+	m.notice = "Closed pane"
 	m.resizeActivePanes()
 	m.persist()
 }

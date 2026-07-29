@@ -467,34 +467,97 @@ func TestPrefixCreatesPlainTerminalPaneAndQuitDetaches(t *testing.T) {
 		t.Fatal("detach requests should be consumed once")
 	}
 }
-func TestSplitsBalanceAndActivePaneCanMove(t *testing.T) {
+
+func TestSplitPreservesManualAncestorRatioAndActivePaneCanMove(t *testing.T) {
 	model := New(t.TempDir())
 	defer model.Close()
 
 	_, _ = model.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
 	model.splitActive(layout.Columns)
-	model.splitActive(layout.Columns)
 
 	active := model.active()
+	originalPaneID := active.root.First.PaneID
+	targetPaneID := active.root.Second.PaneID
+	active.root.Ratio = 0.68
+	beforeRatio := active.root.Ratio
+	beforeRects := active.root.Rects(model.workspaceRect())
+	beforeOriginal := beforeRects[originalPaneID]
+	beforeTarget := beforeRects[targetPaneID]
+
+	model.splitActive(layout.Rows)
+
 	if got := len(active.root.Leaves()); got != 3 {
 		t.Fatalf("expected three panes, got %d", got)
 	}
-	rects := active.root.Rects(model.workspaceRect())
-	minimumWidth, maximumWidth := 1<<30, 0
-	for _, rect := range rects {
-		minimumWidth = min(minimumWidth, rect.Width)
-		maximumWidth = max(maximumWidth, rect.Width)
+	if active.root.Ratio != beforeRatio {
+		t.Fatalf("ancestor ratio changed after split: got %f, want %f", active.root.Ratio, beforeRatio)
 	}
-	if maximumWidth-minimumWidth > 1 {
-		t.Fatalf("expected balanced pane widths, got min=%d max=%d", minimumWidth, maximumWidth)
+	if active.root.Second.Ratio != 0.5 {
+		t.Fatalf("new child split ratio = %f, want 0.5", active.root.Second.Ratio)
 	}
 
+	rects := active.root.Rects(model.workspaceRect())
+	if got := rects[originalPaneID]; got != beforeOriginal {
+		t.Fatalf("unaffected sibling moved: before=%#v after=%#v", beforeOriginal, got)
+	}
+	oldTargetAfter := rects[targetPaneID]
 	activePaneID := active.activePane
+	newPane := rects[activePaneID]
+	if oldTargetAfter.X != beforeTarget.X || newPane.X != beforeTarget.X ||
+		oldTargetAfter.Width != beforeTarget.Width || newPane.Width != beforeTarget.Width ||
+		oldTargetAfter.Y != beforeTarget.Y ||
+		oldTargetAfter.Height+layout.Gap+newPane.Height != beforeTarget.Height {
+		t.Fatalf(
+			"new split did not stay inside the focused pane: before=%#v old=%#v new=%#v",
+			beforeTarget,
+			oldTargetAfter,
+			newPane,
+		)
+	}
+
 	before := rects[activePaneID]
 	model.swapActivePane(layout.Left)
 	after := active.root.Rects(model.workspaceRect())[activePaneID]
 	if after.X >= before.X {
 		t.Fatalf("expected active pane to move left: before=%#v after=%#v", before, after)
+	}
+}
+
+func TestClosePanePreservesManualAncestorRatio(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+
+	_, _ = model.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
+	model.splitActive(layout.Columns)
+
+	active := model.active()
+	unaffectedPaneID := active.root.First.PaneID
+	survivingPaneID := active.root.Second.PaneID
+	active.root.Ratio = 0.68
+	beforeRatio := active.root.Ratio
+	beforeRects := active.root.Rects(model.workspaceRect())
+	beforeUnaffected := beforeRects[unaffectedPaneID]
+	beforeTarget := beforeRects[survivingPaneID]
+
+	model.splitActive(layout.Rows)
+	closedPaneID := active.activePane
+	model.closeActivePane()
+
+	if got := len(active.root.Leaves()); got != 2 {
+		t.Fatalf("expected two panes after close, got %d", got)
+	}
+	if active.root.Ratio != beforeRatio {
+		t.Fatalf("ancestor ratio changed after close: got %f, want %f", active.root.Ratio, beforeRatio)
+	}
+	rects := active.root.Rects(model.workspaceRect())
+	if got := rects[unaffectedPaneID]; got != beforeUnaffected {
+		t.Fatalf("unaffected sibling moved: before=%#v after=%#v", beforeUnaffected, got)
+	}
+	if got := rects[survivingPaneID]; got != beforeTarget {
+		t.Fatalf("local sibling did not absorb the closed pane: before=%#v after=%#v", beforeTarget, got)
+	}
+	if _, exists := model.panes[closedPaneID]; exists {
+		t.Fatalf("closed pane %q is still registered", closedPaneID)
 	}
 }
 
