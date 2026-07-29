@@ -145,6 +145,98 @@ func TestRuntimeDiscoversCodexAndTracksWorkingToDone(t *testing.T) {
 	}
 }
 
+func TestRuntimeCoalescesRapidWheelFrames(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	endpoint, err := Endpoint(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	serverResult := make(chan error, 1)
+	go func() { serverResult <- Run(root, statePath) }()
+	t.Cleanup(func() { _ = Stop(statePath) })
+
+	connection := dialTestRuntime(t, endpoint)
+	defer connection.Close()
+	encoder := json.NewEncoder(connection)
+	decoder := json.NewDecoder(connection)
+	sendTestRequest(t, encoder, request{Version: protocolVersion, Kind: requestAttach})
+	readTestFrame(t, connection, decoder, func(value frame) bool {
+		return value.Version == protocolVersion
+	})
+
+	sendTestRequest(t, encoder, request{
+		Version: protocolVersion,
+		Kind:    requestResize,
+		Width:   120,
+		Height:  36,
+	})
+	readTestFrame(t, connection, decoder, func(value frame) bool {
+		return value.Content != ""
+	})
+
+	observed := make(chan frame, 1024)
+	decodeErrors := make(chan error, 1)
+	go func() {
+		for {
+			var value frame
+			if err := decoder.Decode(&value); err != nil {
+				decodeErrors <- err
+				return
+			}
+			observed <- value
+		}
+	}()
+
+	_ = connection.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	for index := 0; index < 400; index++ {
+		button := tea.MouseWheelUp
+		if index >= 200 {
+			button = tea.MouseWheelDown
+		}
+		mouse := tea.Mouse{X: 40, Y: 10, Button: button}
+		sendTestRequest(t, encoder, request{
+			Version: protocolVersion,
+			Kind:    requestWheel,
+			Mouse:   &mouse,
+		})
+	}
+	_ = connection.SetWriteDeadline(time.Time{})
+	time.Sleep(400 * time.Millisecond)
+
+	frames := 0
+	for {
+		select {
+		case <-observed:
+			frames++
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	select {
+	case err := <-decodeErrors:
+		t.Fatalf("runtime disconnected during wheel burst: %v", err)
+	default:
+	}
+	if frames >= 80 {
+		t.Fatalf("wheel burst produced %d full frames; redraws were not coalesced", frames)
+	}
+
+	if err := Stop(statePath); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-serverResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runtime did not stop after wheel burst test")
+	}
+}
 func TestAgentProcessHelper(t *testing.T) {
 	if os.Getenv("SPLIT_AGENT_TEST_HELPER") != "1" {
 		return

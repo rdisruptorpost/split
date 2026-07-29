@@ -43,6 +43,12 @@ func (m *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case tea.MouseWheelMsg:
+		if !m.renameDialog.open && !m.projectMenu.open && !m.contextMenu.open {
+			m.handleMouseWheel(message.Mouse())
+		}
+		return m, nil
+
 	case tea.MouseMotionMsg:
 		if m.renameDialog.open {
 			m.handleProjectRenameMotion(message.Mouse())
@@ -301,6 +307,42 @@ func (m *Model) handleMouseClick(mouse tea.Mouse) {
 		}
 		m.mode = modeNavigate
 		m.persist()
+		return
+	}
+}
+
+const terminalWheelLines = 3
+
+func (m *Model) handleMouseWheel(mouse tea.Mouse) {
+	if mouse.Button != tea.MouseWheelUp && mouse.Button != tea.MouseWheelDown {
+		return
+	}
+	if mouse.X < m.effectiveSidebarWidth() || !m.workspaceRect().Contains(mouse.X, mouse.Y) {
+		return
+	}
+	active := m.active()
+	if active == nil {
+		return
+	}
+	for paneID, rect := range active.root.Rects(m.workspaceRect()) {
+		if !rect.Contains(mouse.X, mouse.Y) {
+			continue
+		}
+		item := m.panes[paneID]
+		if item == nil || item.session == nil {
+			return
+		}
+		lines := terminalWheelLines
+		if mouse.Button == tea.MouseWheelDown {
+			lines = -lines
+		}
+		item.session.HandleWheel(
+			mouse.X-rect.X-1,
+			mouse.Y-rect.Y-1,
+			mouse.Button,
+			mouse.Mod,
+			lines,
+		)
 		return
 	}
 }

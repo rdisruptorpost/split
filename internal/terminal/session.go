@@ -11,10 +11,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/aymanbagabas/go-pty"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
 )
 
@@ -70,18 +72,21 @@ type Session struct {
 	command Command
 	events  chan<- Event
 
-	mu           sync.RWMutex
-	emulator     *vt.Emulator
-	pseudoterm   pty.Pty
-	process      *pty.Cmd
-	state        State
-	stateErr     error
-	lastActivity time.Time
-	title        string
-	cursorShown  bool
-	cursorBlink  bool
-	cursorStyle  vt.CursorStyle
-	outputFilter outputFilter
+	mu              sync.RWMutex
+	emulator        *vt.Emulator
+	pseudoterm      pty.Pty
+	process         *pty.Cmd
+	state           State
+	stateErr        error
+	lastActivity    time.Time
+	title           string
+	cursorShown     bool
+	cursorBlink     bool
+	cursorStyle     vt.CursorStyle
+	scrollOffset    int
+	mouseModes      map[int]struct{}
+	alternateScroll bool
+	outputFilter    outputFilter
 
 	closeOnce sync.Once
 	workers   sync.WaitGroup
@@ -123,10 +128,20 @@ func Start(id string, command Command, width, height int, events chan<- Event) (
 		cursorShown:  true,
 		cursorBlink:  true,
 		cursorStyle:  vt.CursorBlock,
+		mouseModes:   make(map[int]struct{}),
 	}
 	emulator.SetCallbacks(vt.Callbacks{
 		Title: func(title string) {
 			session.title = title
+		},
+		AltScreen: func(bool) {
+			session.scrollOffset = 0
+		},
+		EnableMode: func(mode ansi.Mode) {
+			session.setTerminalMode(mode, true)
+		},
+		DisableMode: func(mode ansi.Mode) {
+			session.setTerminalMode(mode, false)
 		},
 		CursorVisibility: func(visible bool) {
 			session.cursorShown = visible
@@ -158,6 +173,32 @@ func Start(id string, command Command, width, height int, events chan<- Event) (
 		session.waitForExit()
 	}()
 	return session, nil
+}
+
+func (s *Session) setTerminalMode(mode ansi.Mode, enabled bool) {
+	if mode == nil {
+		return
+	}
+	value := mode.Mode()
+	if isMouseTrackingMode(value) {
+		if enabled {
+			s.mouseModes[value] = struct{}{}
+		} else {
+			delete(s.mouseModes, value)
+		}
+	}
+	if value == 1007 {
+		s.alternateScroll = enabled
+	}
+}
+
+func isMouseTrackingMode(mode int) bool {
+	switch mode {
+	case 9, 1000, 1001, 1002, 1003:
+		return true
+	default:
+		return false
+	}
 }
 
 func ResolveCommand(name, dir string) (Command, error) {
@@ -234,10 +275,59 @@ func (s *Session) Title() string {
 	return s.title
 }
 
-func (s *Session) Render() string {
+func (s *Session) LiveRender() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.emulator.Render()
+}
+
+func (s *Session) Render() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.scrollOffset <= 0 || s.emulator.IsAltScreen() {
+		return s.emulator.Render()
+	}
+	return renderScrollbackViewport(s.emulator, s.scrollOffset)
+}
+
+func renderScrollbackViewport(emulator *vt.Emulator, offset int) string {
+	width := emulator.Width()
+	height := emulator.Height()
+	scrollback := emulator.Scrollback()
+	scrollbackLength := emulator.ScrollbackLen()
+	offset = max(0, min(offset, scrollbackLength))
+	end := scrollbackLength + height - offset
+	start := end - height
+	lines := make(uv.Lines, height)
+
+	for row := range height {
+		line := uv.NewLine(width)
+		position := start + row
+		switch {
+		case position < 0:
+		case position < scrollbackLength:
+			if scrollback != nil {
+				copy(line, scrollback.Line(position))
+			}
+		default:
+			screenRow := position - scrollbackLength
+			if screenRow >= 0 && screenRow < height {
+				for column := range width {
+					if cell := emulator.CellAt(column, screenRow); cell != nil {
+						line[column] = *cell
+					}
+				}
+			}
+		}
+		lines[row] = line
+	}
+	return lines.Render()
+}
+
+func (s *Session) ScrollOffset() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.scrollOffset
 }
 
 func (s *Session) Cursor() Cursor {
@@ -247,7 +337,7 @@ func (s *Session) Cursor() Cursor {
 	return Cursor{
 		X:       position.X,
 		Y:       position.Y,
-		Visible: s.cursorShown,
+		Visible: s.cursorShown && s.scrollOffset == 0,
 		Blink:   s.cursorBlink,
 		Style:   s.cursorStyle,
 		Color:   s.emulator.CursorColor(),
@@ -259,7 +349,13 @@ func (s *Session) Resize(width, height int) error {
 	height = max(1, height)
 
 	s.mu.Lock()
+	previousScrollback := s.emulator.ScrollbackLen()
 	s.emulator.Resize(width, height)
+	currentScrollback := s.emulator.ScrollbackLen()
+	if s.scrollOffset > 0 && currentScrollback > previousScrollback {
+		s.scrollOffset += currentScrollback - previousScrollback
+	}
+	s.scrollOffset = min(s.scrollOffset, currentScrollback)
 	s.mu.Unlock()
 	return s.pseudoterm.Resize(width, height)
 }
@@ -267,14 +363,92 @@ func (s *Session) Resize(width, height int) error {
 func (s *Session) SendKey(message tea.KeyPressMsg) {
 	key := tea.Key(message)
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.scrollOffset = 0
+	if text, ok := printableKeyText(key); ok {
+		s.emulator.SendText(text)
+		return
+	}
+	key.Mod &^= tea.ModCapsLock | tea.ModNumLock | tea.ModScrollLock
 	s.emulator.SendKey(uv.KeyPressEvent(key))
-	s.mu.Unlock()
+}
+
+func printableKeyText(key tea.Key) (string, bool) {
+	if key.Text != "" {
+		ctrl := key.Mod&tea.ModCtrl != 0
+		alt := key.Mod&tea.ModAlt != 0
+		other := key.Mod & (tea.ModMeta | tea.ModHyper | tea.ModSuper)
+		if other == 0 && (!ctrl || alt) {
+			if alt && !ctrl {
+				return "\x1b" + key.Text, true
+			}
+			return key.Text, true
+		}
+	}
+
+	commandModifiers := key.Mod & (tea.ModCtrl | tea.ModAlt | tea.ModMeta | tea.ModHyper | tea.ModSuper)
+	if commandModifiers != 0 {
+		return "", false
+	}
+	code := key.Code
+	if key.Mod&tea.ModShift != 0 {
+		switch {
+		case key.ShiftedCode != 0:
+			code = key.ShiftedCode
+		case unicode.IsLetter(code):
+			code = unicode.ToUpper(code)
+		}
+	}
+	if unicode.IsPrint(code) {
+		return string(code), true
+	}
+	return "", false
 }
 
 func (s *Session) Paste(content string) {
 	s.mu.Lock()
+	s.scrollOffset = 0
 	s.emulator.Paste(content)
 	s.mu.Unlock()
+}
+
+func (s *Session) HandleWheel(x, y int, button tea.MouseButton, mod tea.KeyMod, lines int) bool {
+	if lines == 0 || (button != tea.MouseWheelUp && button != tea.MouseWheelDown) {
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	x = max(0, min(x, s.emulator.Width()-1))
+	y = max(0, min(y, s.emulator.Height()-1))
+
+	if len(s.mouseModes) > 0 {
+		s.scrollOffset = 0
+		mouse := uv.Mouse{X: x, Y: y, Button: button, Mod: mod}
+		s.emulator.SendMouse(uv.MouseWheelEvent(mouse))
+		return true
+	}
+	if s.emulator.IsAltScreen() {
+		if !s.alternateScroll {
+			return false
+		}
+		keyCode := vt.KeyUp
+		if lines < 0 {
+			keyCode = vt.KeyDown
+			lines = -lines
+		}
+		for range lines {
+			s.emulator.SendKey(uv.KeyPressEvent(uv.Key{Code: keyCode}))
+		}
+		return true
+	}
+	return s.scrollLocked(lines)
+}
+
+func (s *Session) scrollLocked(lines int) bool {
+	previous := s.scrollOffset
+	s.scrollOffset = max(0, min(s.scrollOffset+lines, s.emulator.ScrollbackLen()))
+	return s.scrollOffset != previous
 }
 
 func (s *Session) Close() {
@@ -307,7 +481,15 @@ func (s *Session) readOutput() {
 			s.mu.Lock()
 			var writeErr error
 			if len(filtered) > 0 {
+				previousScrollback := s.emulator.ScrollbackLen()
 				_, writeErr = s.emulator.Write(filtered)
+				currentScrollback := s.emulator.ScrollbackLen()
+				if s.scrollOffset > 0 && !s.emulator.IsAltScreen() {
+					if added := currentScrollback - previousScrollback; added > 0 {
+						s.scrollOffset += added
+					}
+					s.scrollOffset = min(s.scrollOffset, currentScrollback)
+				}
 			}
 			s.lastActivity = time.Now()
 			s.mu.Unlock()

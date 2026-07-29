@@ -11,9 +11,9 @@ Every pane is an ordinary PowerShell terminal. Split does not special-case launc
 - nested Codex and Claude rows with loading/working spinners, blocked alerts, completion ticks, interrupted turns, idle markers, and exited markers;
 - recursive split-tree layouts with movement, closing, and automatic balancing;
 - keyboard prefix controls plus a hoverable right-click pane menu;
-- one-click mouse focus for terminal input;
+- one-click mouse focus plus per-pane mouse-wheel scrollback;
 - real PowerShell processes hosted through Windows ConPTY;
-- headless terminal emulation and a native blinking cursor through Charm's `x/vt` package;
+- headless terminal emulation with 5,000 lines of styled history, complete printable-key forwarding, and a native blinking cursor through Charm's `x/vt` package;
 - SQLite persistence for project order, names, roots, pane working directories, focus, and complete split geometry;
 - a per-user background runtime that keeps live terminal processes and their in-memory terminal buffers alive while the UI is detached.
 
@@ -69,6 +69,7 @@ Split starts in navigation mode.
 | `Tab` | Move focus between panes and the project sidebar |
 | `Enter` | Enter the focused terminal |
 | Mouse click | Focus a terminal and immediately enter input mode |
+| Mouse wheel | Scroll the terminal under the pointer; mouse-aware full-screen TUIs receive the wheel event |
 | Click anywhere in sidebar | Leave terminal-input mode and focus project navigation; `q` now detaches |
 | Click an agent row | Select its project and pane while keeping keyboard focus in the sidebar |
 | Right-click project | Open project actions for Rename project or Close project |
@@ -77,7 +78,7 @@ Split starts in navigation mode.
 | `q` or `Ctrl+C` | Detach the UI while in navigation mode |
 | `Ctrl+B` | Open the one-shot command prefix |
 
-The pane right-click menu renames the terminal, creates a PowerShell split to the right or below, creates a new project, moves the focused pane, balances the layout, or closes the pane. A custom terminal name replaces the pane-frame title and its detected Codex or Claude label in the project sidebar while preserving live agent status. The project right-click menu renames a project or closes all of its panes and removes it; Close project is disabled for the final remaining project. Hover selects a row and left-click activates it.
+Mouse-wheel history is independent for every pane. The pane title shows the number of lines above the live bottom, the live cursor is hidden while inspecting history, and typing or pasting snaps back to current output. The pane right-click menu renames the terminal, creates a PowerShell split to the right or below, creates a new project, moves the focused pane, balances the layout, or closes the pane. A custom terminal name replaces the pane-frame title and its detected Codex or Claude label in the project sidebar while preserving live agent status. The project right-click menu renames a project or closes all of its panes and removes it; Close project is disabled for the final remaining project. Hover selects a row and left-click activates it.
 
 Prefix commands:
 

@@ -35,7 +35,10 @@ func newClient(connection net.Conn) (*Client, error) {
 	client := &Client{
 		connection: connection,
 		encoder:    json.NewEncoder(connection),
-		frames:     make(chan frameResult, 4),
+		// Rendering is state-based, so an unread frame becomes obsolete as soon
+		// as a newer one arrives. Keep only the latest frame instead of applying
+		// backpressure to the runtime while Bubble Tea is busy handling input.
+		frames: make(chan frameResult, 1),
 	}
 	if err := client.send(request{Version: protocolVersion, Kind: requestAttach}); err != nil {
 		_ = connection.Close()
@@ -130,10 +133,30 @@ func (c *Client) readFrames() {
 	for {
 		var next frame
 		if err := decoder.Decode(&next); err != nil {
-			c.frames <- frameResult{err: err}
+			c.queueFrame(frameResult{err: err})
 			return
 		}
-		c.frames <- frameResult{frame: next}
+		c.queueFrame(frameResult{frame: next})
+		if next.Detach || next.Error != "" {
+			return
+		}
+	}
+}
+
+// queueFrame is a latest-value mailbox. A slow renderer should skip stale
+// frames, not stop draining the runtime pipe and disconnect the UI.
+func (c *Client) queueFrame(next frameResult) {
+	for {
+		select {
+		case c.frames <- next:
+			return
+		default:
+		}
+
+		select {
+		case <-c.frames:
+		default:
+		}
 	}
 }
 

@@ -59,7 +59,7 @@ func TestPowerShellConPTYInteractiveRoundTrip(t *testing.T) {
 		t.Skip("PowerShell is not available")
 	}
 
-	const marker = "__SPLIT_INTERACTIVE_OK__"
+	const marker = "__SPLIT_INTERACTIVE_P_OK__"
 	events := make(chan Event, 64)
 	session, err := Start("interactive", Command{Name: shell, Args: []string{"-NoLogo"}}, 80, 24, events)
 	if err != nil {
@@ -67,7 +67,11 @@ func TestPowerShellConPTYInteractiveRoundTrip(t *testing.T) {
 	}
 	defer session.Close()
 
-	session.Paste("echo " + marker)
+	session.Paste("echo __SPLIT_INTERACTIVE_")
+	session.SendKey(tea.KeyPressMsg(tea.Key{
+		Text: "P", Code: 'p', ShiftedCode: 'P', Mod: tea.ModShift,
+	}))
+	session.Paste("_OK__")
 	session.SendKey(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	timeout := time.NewTimer(10 * time.Second)
 	defer timeout.Stop()

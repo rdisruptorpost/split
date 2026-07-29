@@ -287,6 +287,11 @@ func (m *Model) renderPane(item *pane, width, height int) string {
 	title := styles.paneTitle.Render(item.title)
 	if item.kind == paneTerminal {
 		title += " " + m.renderTerminalState(item)
+		if item.session != nil {
+			if offset := item.session.ScrollOffset(); offset > 0 {
+				title += " " + styles.muted.Render(fmt.Sprintf("↑%d", offset))
+			}
+		}
 	}
 
 	bodyHeight := max(0, height-2)

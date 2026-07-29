@@ -36,6 +36,47 @@ func TestInputRequestJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMouseWheelRequestJSONRoundTrip(t *testing.T) {
+	originalMouse := tea.Mouse{
+		X: 42, Y: 17, Button: tea.MouseWheelUp, Mod: tea.ModCtrl,
+	}
+	original, ok := requestForMessage(tea.MouseWheelMsg(originalMouse))
+	if !ok || original.Kind != requestWheel {
+		t.Fatalf("mouse wheel message was not accepted: %#v", original)
+	}
+	encoded, err := json.Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded request
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	message, err := decoded.message()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wheelMessage, ok := message.(tea.MouseWheelMsg)
+	if !ok || !reflect.DeepEqual(wheelMessage.Mouse(), originalMouse) {
+		t.Fatalf("mouse wheel changed across protocol: %#v", message)
+	}
+}
+
+func TestClientFrameMailboxKeepsOnlyLatest(t *testing.T) {
+	client := &Client{frames: make(chan frameResult, 1)}
+	client.queueFrame(frameResult{frame: frame{Content: "stale"}})
+	client.queueFrame(frameResult{frame: frame{Content: "latest"}})
+
+	select {
+	case result := <-client.frames:
+		if result.err != nil || result.frame.Content != "latest" {
+			t.Fatalf("mailbox kept the wrong frame: %#v", result)
+		}
+	default:
+		t.Fatal("mailbox did not retain a frame")
+	}
+}
+
 func TestViewFrameRoundTripPreservesCursorAndModes(t *testing.T) {
 	original := tea.NewView("\x1b[31mSplit\x1b[0m")
 	original.BackgroundColor = color.RGBA{R: 12, G: 13, B: 14, A: 255}

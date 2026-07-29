@@ -18,6 +18,7 @@ const (
 	requestKey    requestKind = "key"
 	requestPaste  requestKind = "paste"
 	requestClick  requestKind = "mouse_click"
+	requestWheel  requestKind = "mouse_wheel"
 	requestMotion requestKind = "mouse_motion"
 )
 
@@ -81,6 +82,10 @@ func requestForMessage(message tea.Msg) (request, bool) {
 		mouse := message.Mouse()
 		result.Kind = requestClick
 		result.Mouse = &mouse
+	case tea.MouseWheelMsg:
+		mouse := message.Mouse()
+		result.Kind = requestWheel
+		result.Mouse = &mouse
 	case tea.MouseMotionMsg:
 		mouse := message.Mouse()
 		result.Kind = requestMotion
@@ -110,6 +115,11 @@ func (r request) message() (tea.Msg, error) {
 			return nil, errors.New("mouse click request is missing its coordinates")
 		}
 		return tea.MouseClickMsg(*r.Mouse), nil
+	case requestWheel:
+		if r.Mouse == nil {
+			return nil, errors.New("mouse wheel request is missing its coordinates")
+		}
+		return tea.MouseWheelMsg(*r.Mouse), nil
 	case requestMotion:
 		if r.Mouse == nil {
 			return nil, errors.New("mouse motion request is missing its coordinates")

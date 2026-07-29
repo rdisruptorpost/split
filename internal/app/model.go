@@ -498,7 +498,7 @@ func (m *Model) RefreshAgents(now time.Time) bool {
 		targets = append(targets, agent.Target{
 			PaneID:     paneID,
 			RootPID:    item.session.ProcessID(),
-			Screen:     item.session.Render(),
+			Screen:     item.session.LiveRender(),
 			Title:      item.session.Title(),
 			LastOutput: item.session.LastActivity(),
 			TerminalUp: terminalState == terminal.Running,

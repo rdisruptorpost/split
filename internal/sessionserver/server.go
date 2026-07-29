@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"time"
 
@@ -82,6 +83,7 @@ func Run(root, statePath string) error {
 		err := peer.encoder.Encode(value)
 		_ = peer.connection.SetWriteDeadline(time.Time{})
 		if err != nil {
+			log.Printf("Split client frame write failed: %v", err)
 			closePeer(peer)
 			return false
 		}
@@ -162,8 +164,10 @@ func Run(root, statePath string) error {
 					closePeer(peer)
 					continue
 				}
-				dirty = false
-				sendView(active, false)
+				// Input can arrive much faster than a terminal can draw (wheel
+				// bursts are a common example). Apply every state transition,
+				// but coalesce the resulting view at the 60 Hz render tick.
+				dirty = true
 			}
 
 		case event := <-model.TerminalEvents():
