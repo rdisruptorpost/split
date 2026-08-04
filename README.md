@@ -33,7 +33,7 @@ go build -o split.next.exe .
 
 The visible split process is now a lightweight client. On first launch it starts a hidden local runtime automatically, then connects over a current-user-only Windows named pipe. Subsequent launches reconnect to that runtime.
 
-Normal quit is detach: press `q` in navigation mode, use `Ctrl+B`, then `q`, or close the terminal window. Your PowerShell, Codex, Claude, and other child processes continue running. To deliberately terminate every pane and stop the runtime, run:
+Normal quit is detach: press `q` in navigation mode, use `Ctrl+Z`, then `q`, or close the terminal window. Your PowerShell, Codex, Claude, and other child processes continue running. To deliberately terminate every pane and stop the runtime, run:
 
 ```powershell
 .\split.next.exe server stop
@@ -100,7 +100,7 @@ split starts in navigation mode.
 | Right-click pane without a selection | Open pane actions, including Rename terminal |
 | `[` / `]` | Previous or next project |
 | `q` or `Ctrl+C` | Detach the UI while in navigation mode |
-| `Ctrl+B` | Open the one-shot command prefix |
+| `Ctrl+Z` | Open the one-shot command prefix; `Ctrl+B` passes through to terminal programs such as tmux |
 
 Mouse-wheel history is independent for every pane. The pane title shows the number of lines above the live bottom, the live cursor is hidden while inspecting history, and typing or pasting snaps back to current output. Selection coordinates follow terminal history rather than screen pixels, so text copied after scrolling is the text that was actually highlighted. A normal click, key, paste, wheel event, resize, or completed copy clears the selection. During `Alt` + right-drag, the pointer's quadrant chooses a corner; an outer edge with no split falls back to that pane's nearest internal divider. Split ratios update live, ConPTY resizing is deferred until release, and both pane ratios and sidebar width persist. Creating or closing a pane changes only its local split and preserves every manually resized ancestor; balancing remains an explicit action. The pane right-click menu renames the terminal, creates a PowerShell split to the right or below, creates a new project, moves the focused pane, balances the layout, or closes the pane. A custom terminal name replaces the pane-frame title and its detected Codex or Claude label in the project sidebar while preserving live agent status. The project right-click menu renames a project or closes all of its panes and removes it; Close project is disabled for the final remaining project. Hover selects a row and left-click activates it.
 
@@ -117,7 +117,7 @@ Prefix commands:
 | `[` / `]` | Previous or next project |
 | `n` | Return to navigation mode |
 | `w` | Toggle the sidebar |
-| `b` | Send a literal `Ctrl+B` to the terminal |
+| `z` | Send a literal `Ctrl+Z` to the terminal |
 | `q` | Detach the UI |
 
 New projects and splits always start as PowerShell terminals at the current project root. Once focused, they accept arbitrary terminal programs exactly as Windows Terminal does.

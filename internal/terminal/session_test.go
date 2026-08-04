@@ -35,6 +35,66 @@ func TestTerminalEnvironmentAppliesPerCommandOverrides(t *testing.T) {
 	}
 }
 
+func TestSessionCursorWaitsForChunkedRepaintToSettle(t *testing.T) {
+	emulator := vt.NewEmulator(40, 10)
+	defer emulator.Close()
+	if _, err := emulator.WriteString("\x1b[6;11H"); err != nil {
+		t.Fatal(err)
+	}
+	position := emulator.CursorPosition()
+	events := make(chan Event, 4)
+	session := &Session{
+		id:              "cursor-test",
+		emulator:        emulator,
+		events:          events,
+		cursorShown:     true,
+		cursorBlink:     true,
+		stableCursorX:   position.X,
+		stableCursorY:   position.Y,
+		stableCursorSet: true,
+		closed:          make(chan struct{}),
+	}
+	defer func() {
+		session.mu.Lock()
+		session.cancelCursorSettleLocked()
+		session.mu.Unlock()
+	}()
+
+	writeChunk := func(value string) {
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		session.ensureStableCursorLocked()
+		if _, err := session.emulator.WriteString(value); err != nil {
+			t.Fatal(err)
+		}
+		session.scheduleCursorSettleLocked()
+	}
+
+	// Codex begins a regional repaint by moving to a temporary drawing row.
+	writeChunk("\x1b[2;3H")
+	if cursor := session.Cursor(); cursor.X != 10 || cursor.Y != 5 {
+		t.Fatalf("temporary repaint leaked cursor position: %#v", cursor)
+	}
+
+	// A later ConPTY read restores the real input cursor. It should move once,
+	// after output has been quiet, rather than visiting the temporary row.
+	writeChunk("\x1b[8;17H")
+	if cursor := session.Cursor(); cursor.X != 10 || cursor.Y != 5 {
+		t.Fatalf("cursor moved before repaint settled: %#v", cursor)
+	}
+	select {
+	case event := <-events:
+		if event.SessionID != session.id || event.Kind != Updated {
+			t.Fatalf("settled cursor event = %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cursor did not publish its settled position")
+	}
+	if cursor := session.Cursor(); cursor.X != 16 || cursor.Y != 7 {
+		t.Fatalf("settled cursor = %#v, want 16,7", cursor)
+	}
+}
+
 func TestSessionScrollbackViewport(t *testing.T) {
 	emulator := vt.NewEmulator(16, 3)
 	emulator.SetScrollbackSize(50)

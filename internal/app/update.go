@@ -104,7 +104,7 @@ func (m *Model) handleKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		if message.String() == "ctrl+b" {
+		if message.String() == "ctrl+z" {
 			m.clearTerminalSelection()
 			m.modeBeforePrefix = modeTerminal
 			m.mode = modePrefix
@@ -135,7 +135,7 @@ func (m *Model) handleNavigationKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd
 	case "ctrl+c", "q":
 		m.detachRequested = true
 		return m, tea.Quit
-	case "ctrl+b":
+	case "ctrl+z":
 		m.modeBeforePrefix = modeNavigate
 		m.mode = modePrefix
 	case "tab":
@@ -201,9 +201,9 @@ func (m *Model) handlePrefixKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch key {
 	case "esc", "escape":
 		m.mode = m.modeBeforePrefix
-	case "ctrl+b", "b":
+	case "ctrl+z", "z":
 		if item := m.activePane(); item != nil && item.session != nil {
-			item.session.SendKey(tea.KeyPressMsg(tea.Key{Code: 'b', Mod: tea.ModCtrl}))
+			item.session.SendKey(tea.KeyPressMsg(tea.Key{Code: 'z', Mod: tea.ModCtrl}))
 		}
 		m.mode = modeTerminal
 	case "n":

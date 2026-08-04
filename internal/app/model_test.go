@@ -462,6 +462,35 @@ func TestMouseSelectionCopiesWithControlCAndRightClick(t *testing.T) {
 		t.Fatal("right-click without a selection should retain the pane context menu")
 	}
 }
+func TestControlZOwnsPrefixWhileControlBPassesThroughTerminalMode(t *testing.T) {
+	model := New(t.TempDir())
+	defer model.Close()
+	model.mode = modeTerminal
+	model.focus = focusPanes
+
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'b', Mod: tea.ModCtrl}))
+	if model.mode != modeTerminal {
+		t.Fatalf("Ctrl+B was intercepted as split mode %v", model.mode)
+	}
+
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'z', Mod: tea.ModCtrl}))
+	if model.mode != modePrefix || model.modeBeforePrefix != modeTerminal {
+		t.Fatalf("Ctrl+Z did not open the terminal prefix: mode=%v previous=%v",
+			model.mode, model.modeBeforePrefix)
+	}
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'z', Mod: tea.ModCtrl}))
+	if model.mode != modeTerminal {
+		t.Fatalf("double Ctrl+Z did not return to terminal mode: %v", model.mode)
+	}
+
+	model.mode = modeNavigate
+	_, _ = model.Update(tea.KeyPressMsg(tea.Key{Code: 'z', Mod: tea.ModCtrl}))
+	if model.mode != modePrefix || model.modeBeforePrefix != modeNavigate {
+		t.Fatalf("Ctrl+Z did not open the navigation prefix: mode=%v previous=%v",
+			model.mode, model.modeBeforePrefix)
+	}
+}
+
 func TestPrefixCreatesPlainTerminalPaneAndQuitDetaches(t *testing.T) {
 	model := New(t.TempDir())
 	defer model.Close()

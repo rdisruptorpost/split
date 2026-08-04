@@ -143,7 +143,7 @@ func (m *Model) renderSidebar(width, height int) string {
 	}
 
 	footer := []string{
-		" " + styles.muted.Render("ctrl+b") + " " + styles.text.Render("menu") + "  " + styles.muted.Render("q") + " " + styles.text.Render("detach"),
+		" " + styles.muted.Render("ctrl+z") + " " + styles.text.Render("menu") + "  " + styles.muted.Render("q") + " " + styles.text.Render("detach"),
 		" " + styles.muted.Render("tab") + "    " + styles.text.Render("switch focus"),
 	}
 	bodyHeight := max(0, height-len(footer))
@@ -359,14 +359,14 @@ func (m *Model) renderOverview(width, height int) string {
 			styles.eyebrow.Render("QUICK START") + "\n" +
 			key.Render("click/enter") + " focus a terminal\n" +
 			key.Render("right-click") + " pane action menu\n" +
-			key.Render("ctrl+b  v") + "   split right\n" +
-			key.Render("ctrl+b  s") + "   split down\n" +
-			key.Render("ctrl+b  c") + "   new project\n" +
+			key.Render("ctrl+z  v") + "   split right\n" +
+			key.Render("ctrl+z  s") + "   split down\n" +
+			key.Render("ctrl+z  c") + "   new project\n" +
 
-			key.Render("ctrl+b  x") + "   close focused pane\n" +
-			key.Render("ctrl+b  hjkl") + " move focused pane\n" +
-			key.Render("ctrl+b  =") + "   balance pane sizes\n" +
-			key.Render("ctrl+b  n") + "   navigate panes\n\n" +
+			key.Render("ctrl+z  x") + "   close focused pane\n" +
+			key.Render("ctrl+z  hjkl") + " move focused pane\n" +
+			key.Render("ctrl+z  =") + "   balance pane sizes\n" +
+			key.Render("ctrl+z  n") + "   navigate panes\n\n" +
 			styles.eyebrow.Render("FOUNDATION") + "\n" +
 			lipgloss.NewStyle().Foreground(palette.green).Render("✓") + " sidebar and tabs\n" +
 			lipgloss.NewStyle().Foreground(palette.green).Render("✓") + " split-tree layout\n" +
@@ -415,7 +415,7 @@ func (m *Model) renderStatus(width int) string {
 	} else {
 		switch m.mode {
 		case modeTerminal:
-			hint += "ctrl+b  command prefix"
+			hint += "ctrl+z  command prefix"
 		case modePrefix:
 			hint += "v/s split  x close  hjkl move pane  = balance  n navigate  q detach"
 		default:

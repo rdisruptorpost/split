@@ -50,7 +50,7 @@ func TestRuntimeKeepsTerminalAliveAcrossClientDetach(t *testing.T) {
 		return strings.Contains(value.Content, "SPLIT_KEEPALIVE")
 	})
 
-	prefix := tea.Key{Code: 'b', Mod: tea.ModCtrl}
+	prefix := tea.Key{Code: 'z', Mod: tea.ModCtrl}
 	sendTestRequest(t, firstEncoder, request{Version: protocolVersion, Kind: requestKey, Key: &prefix})
 	readTestFrame(t, first, firstDecoder, func(value frame) bool { return value.Content != "" })
 	quit := tea.Key{Code: 'q', Text: "q"}
@@ -276,7 +276,7 @@ func TestRuntimePreservesExactAgentBindingAcrossStopAndRestartsInAgentDirectory(
 
 	// Match the user's sequence: detach the UI while the runtime remains live,
 	// then explicitly stop the server.
-	prefix := tea.Key{Code: 'b', Mod: tea.ModCtrl}
+	prefix := tea.Key{Code: 'z', Mod: tea.ModCtrl}
 	sendTestRequest(t, firstEncoder, request{Version: protocolVersion, Kind: requestKey, Key: &prefix})
 	readTestFrame(t, first, firstDecoder, func(value frame) bool { return value.Content != "" })
 	quit := tea.Key{Code: 'q', Text: "q"}

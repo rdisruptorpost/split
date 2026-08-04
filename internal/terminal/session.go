@@ -68,6 +68,11 @@ type Cursor struct {
 	Color   color.Color
 }
 
+// ConPTY may split one full-screen repaint across several reads. Waiting for a
+// short quiet period before moving the native Bubble Tea cursor prevents the
+// renderer from exposing a child TUI's temporary drawing coordinates.
+const cursorSettleDelay = 30 * time.Millisecond
+
 type Session struct {
 	id      string
 	command Command
@@ -84,6 +89,12 @@ type Session struct {
 	cursorShown      bool
 	cursorBlink      bool
 	cursorStyle      vt.CursorStyle
+	stableCursorX    int
+	stableCursorY    int
+	stableCursorSet  bool
+	cursorPending    bool
+	cursorDeadline   time.Time
+	cursorTimer      *time.Timer
 	scrollOffset     int
 	selection        terminalSelection
 	mouseModes       map[int]struct{}
@@ -122,6 +133,7 @@ func Start(id string, command Command, width, height int, events chan<- Event) (
 	cmd.Dir = command.Dir
 	cmd.Env = terminalEnvironment(os.Environ(), command.Env)
 
+	initialCursor := emulator.CursorPosition()
 	session := &Session{
 		id:               id,
 		command:          command,
@@ -134,6 +146,9 @@ func Start(id string, command Command, width, height int, events chan<- Event) (
 		cursorShown:      true,
 		cursorBlink:      true,
 		cursorStyle:      vt.CursorBlock,
+		stableCursorX:    initialCursor.X,
+		stableCursorY:    initialCursor.Y,
+		stableCursorSet:  true,
 		mouseModes:       make(map[int]struct{}),
 		workingDirectory: filepath.Clean(command.Dir),
 		promptReady:      make(chan struct{}),
@@ -392,9 +407,13 @@ func (s *Session) Cursor() Cursor {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	position := s.emulator.CursorPosition()
+	x, y := position.X, position.Y
+	if s.cursorPending && s.stableCursorSet {
+		x, y = s.stableCursorX, s.stableCursorY
+	}
 	return Cursor{
-		X:       position.X,
-		Y:       position.Y,
+		X:       x,
+		Y:       y,
 		Visible: s.cursorShown && s.scrollOffset == 0 && !s.selection.visible,
 		Blink:   s.cursorBlink,
 		Style:   s.cursorStyle,
@@ -408,8 +427,10 @@ func (s *Session) Resize(width, height int) error {
 
 	s.mu.Lock()
 	s.selection = terminalSelection{}
+	s.cancelCursorSettleLocked()
 	previousScrollback := s.emulator.ScrollbackLen()
 	s.emulator.Resize(width, height)
+	s.snapshotCursorLocked()
 	currentScrollback := s.emulator.ScrollbackLen()
 	if s.scrollOffset > 0 && currentScrollback > previousScrollback {
 		s.scrollOffset += currentScrollback - previousScrollback
@@ -517,6 +538,7 @@ func (s *Session) Close() {
 	s.closeOnce.Do(func() {
 		close(s.closed)
 		s.mu.Lock()
+		s.cancelCursorSettleLocked()
 		process := s.process.Process
 		if process != nil {
 			_ = process.Kill()
@@ -544,6 +566,7 @@ func (s *Session) readOutput() {
 			s.mu.Lock()
 			var writeErr error
 			if len(filtered) > 0 {
+				s.ensureStableCursorLocked()
 				previousScrollback := s.emulator.ScrollbackLen()
 				_, writeErr = s.emulator.Write(filtered)
 				currentScrollback := s.emulator.ScrollbackLen()
@@ -552,6 +575,9 @@ func (s *Session) readOutput() {
 						s.scrollOffset += added
 					}
 					s.scrollOffset = min(s.scrollOffset, currentScrollback)
+				}
+				if writeErr == nil {
+					s.scheduleCursorSettleLocked()
 				}
 			}
 			s.lastActivity = time.Now()
@@ -568,6 +594,80 @@ func (s *Session) readOutput() {
 			}
 			return
 		}
+	}
+}
+
+func (s *Session) ensureStableCursorLocked() {
+	if s.stableCursorSet {
+		return
+	}
+	s.snapshotCursorLocked()
+}
+
+func (s *Session) snapshotCursorLocked() {
+	position := s.emulator.CursorPosition()
+	s.stableCursorX = position.X
+	s.stableCursorY = position.Y
+	s.stableCursorSet = true
+}
+
+func (s *Session) scheduleCursorSettleLocked() {
+	s.cursorPending = true
+	s.cursorDeadline = time.Now().Add(cursorSettleDelay)
+	if s.cursorTimer == nil {
+		s.cursorTimer = time.AfterFunc(cursorSettleDelay, s.settleCursor)
+		return
+	}
+	s.cursorTimer.Reset(cursorSettleDelay)
+}
+
+func (s *Session) cancelCursorSettleLocked() {
+	s.cursorPending = false
+	s.cursorDeadline = time.Time{}
+	if s.cursorTimer != nil {
+		s.cursorTimer.Stop()
+		s.cursorTimer = nil
+	}
+}
+
+func (s *Session) settleCursor() {
+	s.mu.Lock()
+	if !s.cursorPending || s.sessionClosedLocked() {
+		s.mu.Unlock()
+		return
+	}
+	if remaining := time.Until(s.cursorDeadline); remaining > 0 {
+		if s.cursorTimer != nil {
+			s.cursorTimer.Reset(remaining)
+		}
+		s.mu.Unlock()
+		return
+	}
+	position := s.emulator.CursorPosition()
+	changed := !s.stableCursorSet ||
+		position.X != s.stableCursorX || position.Y != s.stableCursorY
+	s.stableCursorX = position.X
+	s.stableCursorY = position.Y
+	s.stableCursorSet = true
+	s.cursorPending = false
+	s.cursorDeadline = time.Time{}
+	s.cursorTimer = nil
+	s.mu.Unlock()
+
+	if changed {
+		s.notify(Event{SessionID: s.id, Kind: Updated})
+	}
+}
+
+func (s *Session) sessionClosedLocked() bool {
+	if s.closed == nil {
+		return false
+	}
+	select {
+	case <-s.closed:
+		return true
+	default:
+		return false
 	}
 }
 
